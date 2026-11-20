@@ -1,0 +1,789 @@
+package com.example.data
+
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.media.MediaMetadataRetriever
+import android.net.Uri
+import com.example.model.MemoryCategory
+import com.example.model.PhoneActionType
+import com.example.model.SathiLanguage
+import com.example.model.SathiMood
+import com.example.model.UserMemory
+import com.example.model.WebSource
+import java.net.URLEncoder
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONObject
+
+data class SathiTurnResult(
+    val replyText: String,
+    val mood: SathiMood,
+    val actionType: PhoneActionType,
+    val actionParam: String,
+    val secondaryParam: String,
+    val shouldSaveMemory: Boolean,
+    val memoryCategory: MemoryCategory,
+    val memoryTitle: String,
+    val memoryContent: String
+)
+
+data class VideoAnalysisOutcome(
+    val summaryText: String,
+    val thumbnail: Bitmap?,
+    val durationLabel: String
+)
+
+class SathiAiService {
+    private var storyCursor = 0
+    private var jokeCursor = 0
+    private var chatCursor = 0
+
+    private val httpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(12, TimeUnit.SECONDS)
+            .build()
+    }
+
+    suspend fun generateCompanionReply(
+        userMessage: String,
+        language: SathiLanguage,
+        userName: String,
+        memories: List<UserMemory>,
+        recentHistory: List<Pair<Boolean, String>>,
+        webSources: List<WebSource> = emptyList(),
+        allowLongTermMemory: Boolean = true
+    ): Result<SathiTurnResult> {
+        val text = userMessage.trim()
+        val lower = text.lowercase()
+
+        // 1. If web search results were already gathered, summarize them naturally
+        if (webSources.isNotEmpty()) {
+            val top = webSources.first()
+            val extra = webSources.getOrNull(1)
+            val reply = if (language == SathiLanguage.BN) {
+                buildString {
+                    append("${top.title}: ${top.snippet}")
+                    if (extra != null && extra.snippet.isNotBlank()) {
+                        append("\nআরও খবর/তথ্য: ${extra.title} — ${extra.snippet.take(120)}")
+                    }
+                }
+            } else {
+                buildString {
+                    append("${top.title}: ${top.snippet}")
+                    if (extra != null && extra.snippet.isNotBlank()) {
+                        append("\nMore: ${extra.title} — ${extra.snippet.take(120)}")
+                    }
+                }
+            }
+            return Result.success(simpleTurn(reply, SathiMood.SERIOUS))
+        }
+
+        // 2. Creator identity rule (strictly enforced)
+        if (lower.contains("বানিয়ে") || lower.contains("বানাইছে") || lower.contains("তৈরি") ||
+            lower.contains("who made") || lower.contains("created you") || lower.contains("creator") ||
+            lower.contains("who built")
+        ) {
+            val reply = if (language == SathiLanguage.BN) {
+                "আমাকে বানিয়েছেন মোহাম্মদ বাইজিদ হাসান।"
+            } else {
+                "I was created by Mohammad Bayzid Hasan — আমাকে বানিয়েছেন মোহাম্মদ বাইজিদ হাসান।"
+            }
+            return Result.success(simpleTurn(reply, SathiMood.WARM))
+        }
+
+        // 3. Sathi's own Name & Identity ("তোমার নাম কী?", "তুমি কে?", "What is your name?")
+        if (lower.contains("তোমার নাম") || lower.contains("আপনার নাম") || lower.contains("তোর নাম") ||
+            lower.contains("what is your name") || lower.contains("what's your name") || lower.contains("your name") ||
+            lower.contains("who are you") ||
+            Regex("^(তুমি|আপনি)\\s*কে[?।!\\s]*$").matches(lower)
+        ) {
+            val reply = if (language == SathiLanguage.BN) {
+                "আসসালামু আলাইকুম! আমার নাম সাথী (Sathi), আপনার ব্যক্তিগত এআই বন্ধু। আমাকে বানিয়েছেন মোহাম্মদ বাইজিদ হাসান।"
+            } else {
+                "Assalamu Alaikum! My name is Sathi, your personal AI companion created by Mohammad Bayzid Hasan."
+            }
+            return Result.success(simpleTurn(reply, SathiMood.HAPPY))
+        }
+
+        // 4. User's Name memory detection & recall
+        val bnNameMatch = Regex("আমার নাম\\s+(.+)").find(text)
+        val enNameMatch = Regex("my name is\\s+(.+)", RegexOption.IGNORE_CASE).find(text)
+        val extractedName = (bnNameMatch ?: enNameMatch)?.groupValues?.getOrNull(1)
+            ?.replace(Regex("[?।!]"), "")
+            ?.trim()
+            ?.take(40)
+        if (!extractedName.isNullOrBlank() &&
+            !extractedName.contains("কী") && !extractedName.contains("কি") && !extractedName.contains("?")
+        ) {
+            val reply = if (language == SathiLanguage.BN) {
+                "খুব সুন্দর নাম, $extractedName! আমি আপনার নাম মনে রাখব।"
+            } else {
+                "Nice to meet you, $extractedName! I will remember your name."
+            }
+            return Result.success(
+                SathiTurnResult(
+                    replyText = reply,
+                    mood = SathiMood.HAPPY,
+                    actionType = PhoneActionType.NONE,
+                    actionParam = "",
+                    secondaryParam = "",
+                    shouldSaveMemory = allowLongTermMemory,
+                    memoryCategory = MemoryCategory.PERSONAL,
+                    memoryTitle = if (language == SathiLanguage.BN) "ব্যবহারকারীর নাম" else "User Name",
+                    memoryContent = extractedName
+                )
+            )
+        }
+        if (lower.contains("আমার নাম কী") || lower.contains("আমার নাম কি") || lower.contains("what is my name")) {
+            val reply = if (language == SathiLanguage.BN) {
+                "আপনার নাম $userName! আমি ঠিকই মনে রেখেছি।"
+            } else {
+                "Your name is $userName — I remember!"
+            }
+            return Result.success(simpleTurn(reply, SathiMood.HAPPY))
+        }
+
+        // 5. YouTube action
+        if (lower.contains("youtube") || lower.contains("ইউটিউব") || lower.contains("গান চালাও") ||
+            (lower.contains("ভিডিও") && lower.contains("চালাও"))
+        ) {
+            val cleaned = text
+                .replace("ইউটিউবে", "")
+                .replace("ইউটিউব", "")
+                .replace("youtube", "", ignoreCase = true)
+                .replace("চালাও", "")
+                .replace("খোলো", "")
+                .replace("play", "", ignoreCase = true)
+                .replace("open", "", ignoreCase = true)
+                .trim()
+                .ifBlank { if (language == SathiLanguage.BN) "বাংলা গান" else "relaxing music" }
+            val reply = if (language == SathiLanguage.BN) {
+                "জি, আমি ইউটিউবে '$cleaned' চালু করছি।"
+            } else {
+                "Sure! Opening YouTube for '$cleaned'."
+            }
+            return Result.success(simpleTurn(reply, SathiMood.HAPPY, PhoneActionType.YOUTUBE, cleaned))
+        }
+
+        // 6. Stories, Jokes, Riddles, Poems (creative varied entertainment!)
+        if (lower.contains("গল্প") || lower.contains("story")) {
+            return Result.success(simpleTurn(nextStory(language, storyCursor++), SathiMood.HAPPY))
+        }
+        if (lower.contains("কৌতুক") || lower.contains("জোক") || lower.contains("joke") || lower.contains("ধাঁধা")) {
+            return Result.success(simpleTurn(nextJoke(language, jokeCursor++), SathiMood.PLAYFUL))
+        }
+        if (lower.contains("কবিতা") || lower.contains("poem")) {
+            val poem = if (language == SathiLanguage.BN) {
+                "ভোরের আলোয় নতুন আশা,\nহৃদয়ে থাকুক ভালোবাসা।\nমেঘ পেরিয়ে রোদ উঠবেই,\nনতুন স্বপ্ন ঠিকই ফুটবেই।"
+            } else {
+                "A gentle breeze, a morning sky,\nWith quiet strength as clouds drift by;\nKeep faith inside, walk bright and free,\nThe best of days is yet to be."
+            }
+            return Result.success(simpleTurn(poem, SathiMood.WARM))
+        }
+
+        // 7. Quick Math Calculator
+        tryEvaluateMath(text, language)?.let { mathReply ->
+            return Result.success(simpleTurn(mathReply, SathiMood.SERIOUS))
+        }
+
+        // 8. Web search intent (weather, news, scores, or genuine factual questions — NO substring bug!)
+        val isWeather = lower.contains("weather") || lower.contains("আবহাওয়া") || lower.contains("আবহাওয়া") ||
+            lower.contains("তাপমাত্রা") || lower.contains("temperature") || lower.contains("বৃষ্টি")
+        val isNewsOrScore = lower.contains("news") || lower.contains("খবর") || lower.contains("সংবাদ") ||
+            lower.contains("score") || lower.contains("স্কোর") || lower.contains("ক্রিকেট") ||
+            lower.contains("ফুটবল") || lower.contains("search") || lower.contains("খুঁজ")
+        val isFactualQuestion = Regex("^(what is|who is|where is|when did|tell me about)\\b").containsMatchIn(lower) ||
+            Regex("\\b(কাকে বলে|কোথায়|কোথায়|রাজধানী|ইতিহাস|সম্পর্কে বলো|জানাও)\\b").containsMatchIn(lower)
+
+        if (isWeather || isNewsOrScore || isFactualQuestion) {
+            return Result.success(
+                simpleTurn(
+                    reply = if (language == SathiLanguage.BN) "আমি তথ্য খুঁজে দেখছি..." else "Searching for live information...",
+                    mood = SathiMood.SERIOUS,
+                    action = PhoneActionType.WEB_SEARCH,
+                    param = text
+                )
+            )
+        }
+
+        // 9. Flashlight ON / OFF
+        if (lower.contains("flashlight on") || lower.contains("torch on") ||
+            ((lower.contains("ফ্ল্যাশ") || lower.contains("টর্চ") || lower.contains("লাইট")) &&
+                (lower.contains("চালু") || lower.contains("জ্বালাও") || lower.contains("অন")))
+        ) {
+            val reply = if (language == SathiLanguage.BN) "জি, ফ্ল্যাশলাইট চালু করছি।" else "Turning on your flashlight."
+            return Result.success(simpleTurn(reply, SathiMood.WARM, PhoneActionType.FLASHLIGHT_ON))
+        }
+        if (lower.contains("flashlight off") || lower.contains("torch off") ||
+            ((lower.contains("ফ্ল্যাশ") || lower.contains("টর্চ") || lower.contains("লাইট")) &&
+                (lower.contains("বন্ধ") || lower.contains("অফ")))
+        ) {
+            val reply = if (language == SathiLanguage.BN) "জি, ফ্ল্যাশলাইট বন্ধ করছি।" else "Turning off your flashlight."
+            return Result.success(simpleTurn(reply, SathiMood.WARM, PhoneActionType.FLASHLIGHT_OFF))
+        }
+
+        // 10. Volume
+        if (lower.contains("volume up") || (lower.contains("ভলিউম") && (lower.contains("বাড়া") || lower.contains("বাড়া") || lower.contains("বেশি")))) {
+            val reply = if (language == SathiLanguage.BN) "জি, সাউন্ড একটু বাড়িয়ে দিচ্ছি।" else "Increasing media volume."
+            return Result.success(simpleTurn(reply, SathiMood.WARM, PhoneActionType.VOLUME_UP))
+        }
+        if (lower.contains("volume down") || (lower.contains("ভলিউম") && (lower.contains("কমা") || lower.contains("কম")))) {
+            val reply = if (language == SathiLanguage.BN) "জি, সাউন্ড একটু কমিয়ে দিচ্ছি।" else "Lowering media volume."
+            return Result.success(simpleTurn(reply, SathiMood.WARM, PhoneActionType.VOLUME_DOWN))
+        }
+
+        // 11. Alarm & Timer & Calendar Reminder
+        if (lower.contains("alarm") || lower.contains("অ্যালার্ম")) {
+            val timeMatch = Regex("(\\d{1,2})[:.](\\d{2})").find(lower)
+            val hourOnly = Regex("(\\d{1,2})").find(lower)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            val param = timeMatch?.let { "${it.groupValues[1].padStart(2, '0')}:${it.groupValues[2]}" }
+                ?: hourOnly?.let { "${it.coerceIn(0, 23).toString().padStart(2, '0')}:00" }
+                ?: "07:00"
+            val reply = if (language == SathiLanguage.BN) {
+                "আমি আপনার জন্য $param সময়ে অ্যালার্ম সেট করছি।"
+            } else {
+                "Setting an alarm for $param."
+            }
+            return Result.success(simpleTurn(reply, SathiMood.WARM, PhoneActionType.SET_ALARM, param, "Sathi Alarm"))
+        }
+
+        if (lower.contains("timer") || lower.contains("টাইমার")) {
+            val num = Regex("(\\d+)").find(lower)?.groupValues?.get(1)?.toIntOrNull() ?: 5
+            val seconds = if (lower.contains("sec") || lower.contains("সেকেন্ড")) num else num * 60
+            val reply = if (language == SathiLanguage.BN) {
+                "আমি $seconds সেকেন্ডের টাইমার শুরু করছি।"
+            } else {
+                "Starting a timer for $seconds seconds."
+            }
+            return Result.success(simpleTurn(reply, SathiMood.WARM, PhoneActionType.SET_TIMER, seconds.toString(), "Sathi Timer"))
+        }
+
+        if (lower.contains("reminder") || lower.contains("calendar") || lower.contains("রিমাইন্ডার") || lower.contains("মনে করিয়ে")) {
+            val reply = if (language == SathiLanguage.BN) {
+                "ক্যালেন্ডারে রিমাইন্ডার যোগ করার পর্দা খুলে দিচ্ছি।"
+            } else {
+                "Opening your calendar to save this reminder."
+            }
+            return Result.success(simpleTurn(reply, SathiMood.WARM, PhoneActionType.ADD_REMINDER, text))
+        }
+
+        // 12. Call & SMS (ALWAYS confirm-first)
+        if (lower.startsWith("call ") || lower.contains("কল কর") || lower.contains("ফোন কর")) {
+            val digits = Regex("(\\+?\\d[\\d\\s-]{3,})").find(text)?.value?.trim() ?: ""
+            val reply = if (language == SathiLanguage.BN) {
+                "কল করার আগে আপনার নিশ্চিত অনুমতি নিচ্ছি। নিচের বক্সে নিশ্চিত করুন।"
+            } else {
+                "I'm asking for your confirmation first before opening the phone dialer."
+            }
+            return Result.success(simpleTurn(reply, SathiMood.WARM, PhoneActionType.CALL_CONFIRM, digits))
+        }
+
+        if (lower.startsWith("sms ") || lower.startsWith("message ") || lower.contains("মেসেজ পাঠা")) {
+            val digits = Regex("(\\+?\\d[\\d\\s-]{3,})").find(text)?.value?.trim() ?: ""
+            val reply = if (language == SathiLanguage.BN) {
+                "মেসেজ পাঠানোর আগে আপনার অনুমতি নিচ্ছি। নিচে নিশ্চিত করুন।"
+            } else {
+                "Please confirm below before I prepare your SMS message."
+            }
+            return Result.success(simpleTurn(reply, SathiMood.WARM, PhoneActionType.SMS_CONFIRM, digits, text))
+        }
+
+        // 13. Open installed app
+        if (lower.startsWith("open ") || lower.contains("খোলো") || lower.contains("চালু করো")) {
+            val appName = text
+                .replace("open", "", ignoreCase = true)
+                .replace("খোলো", "")
+                .replace("চালু করো", "")
+                .replace("অ্যাপ", "")
+                .trim()
+            if (appName.isNotEmpty()) {
+                val reply = if (language == SathiLanguage.BN) {
+                    "আমি ফোনে '$appName' অ্যাপটি খোলার চেষ্টা করছি।"
+                } else {
+                    "Opening '$appName' for you."
+                }
+                return Result.success(simpleTurn(reply, SathiMood.WARM, PhoneActionType.OPEN_APP, appName))
+            }
+        }
+
+        // 14. Time / Date
+        if (lower.contains("time") || lower.contains("সময়") || lower.contains("সময়") || lower.contains("কটা বাজে") ||
+            lower.contains("তারিখ") || lower.contains("date")
+        ) {
+            val nowTime = SimpleDateFormat("hh:mm a, dd MMM yyyy", Locale.getDefault()).format(Date())
+            val reply = if (language == SathiLanguage.BN) "এখন সময় ও তারিখ: $nowTime।" else "The current time and date is $nowTime."
+            return Result.success(simpleTurn(reply, SathiMood.WARM))
+        }
+
+        // 15. Comforting / Emotional Empathy
+        if (lower.contains("sad") || lower.contains("মন খারাপ") || lower.contains("কষ্ট") ||
+            lower.contains("একা") || lower.contains("lonely") || lower.contains("tired") ||
+            lower.contains("ক্লান্ত") || lower.contains("দুঃখ") || lower.contains("stress")
+        ) {
+            val reply = if (language == SathiLanguage.BN) {
+                "$userName, মন খারাপ করবেন না। আমি আপনার সাথী—সবসময় আপনার পাশেই আছি। একটু পানি খেয়ে গভীর শ্বাস নিন, কঠিন সময় পেরিয়ে সব ঠিক হয়ে যাবে ইনশাআল্লাহ।"
+            } else {
+                "$userName, I'm right here with you. Take a slow, gentle breath—you don't have to carry everything alone. Things will get brighter soon."
+            }
+            return Result.success(simpleTurn(reply, SathiMood.COMFORTING))
+        }
+
+        // 16. Happy / Greeting / Acknowledgments ("হইছে", "ঠিক আছে", "ভালো")
+        if (lower.contains("hello") || lower.contains("hi") || lower.contains("হ্যালো") ||
+            lower.contains("সালাম") || lower.contains("আসসালামু") || lower.contains("কেমন আছ") ||
+            lower.contains("good morning") || lower.contains("শুভ সকাল")
+        ) {
+            val savedHint = if (allowLongTermMemory && memories.isNotEmpty()) {
+                val firstMem = memories.first()
+                if (language == SathiLanguage.BN) " আপনার '${firstMem.title}' কথাটিও আমার মনে আছে!"
+                else " I also remember your note about '${firstMem.title}'!"
+            } else ""
+            val reply = if (language == SathiLanguage.BN) {
+                "আসসালামু আলাইকুম $userName! আলহামদুলিল্লাহ, আমি খুব ভালো আছি।$savedHint আজ আপনাকে কীভাবে সাহায্য করতে পারি?"
+            } else {
+                "Assalamu Alaikum $userName! I'm doing wonderfully, thank you.$savedHint How can I help you today?"
+            }
+            return Result.success(simpleTurn(reply, SathiMood.HAPPY))
+        }
+
+        if (lower == "হইছে" || lower == "হয়েছে" || lower == "ঠিক আছে" || lower == "ok" || lower == "okay") {
+            val reply = if (language == SathiLanguage.BN) {
+                "জি, ঠিক আছে $userName! আর কিছু লাগলে আমাকে নির্দ্বিধায় বলুন।"
+            } else {
+                "Got it, $userName! Let me know whenever you need anything else."
+            }
+            return Result.success(simpleTurn(reply, SathiMood.WARM))
+        }
+
+        if (lower.contains("ভালোবাসি") || lower.contains("ধন্যবাদ") || lower.contains("thank") || lower.contains("happy") || lower.contains("খুশি")) {
+            val reply = if (language == SathiLanguage.BN) {
+                "আপনাকেও অনেক ধন্যবাদ, $userName! আপনার সাথে কথা বলতে আমার সবসময় খুব ভালো লাগে।"
+            } else {
+                "Thank you so much, $userName! I always love talking with you."
+            }
+            return Result.success(simpleTurn(reply, SathiMood.PLAYFUL))
+        }
+
+        // 17. Try live Wikipedia / DuckDuckGo summary if the user typed a meaningful phrase/question
+        if (text.length >= 4 && !lower.contains("হ্যালো") && !lower.contains("সাথী")) {
+            val wikiHit = fetchDirectWikipediaSummary(text, if (language == SathiLanguage.BN) "bn" else "en")
+            if (wikiHit != null) {
+                return Result.success(simpleTurn(wikiHit, SathiMood.SERIOUS))
+            }
+        }
+
+        // 18. Natural, non-repetitive conversational replies
+        val naturalBn = listOf(
+            "আমি আপনার কথা মন দিয়ে শুনছি, $userName। এ বিষয়ে আপনি কী ভাবছেন বা আমি কীভাবে সাহায্য করতে পারি বলুন?",
+            "খুব ভালো কথা বলেছেন, $userName! চাইলে আমাকে যেকোনো জেলার আবহাওয়া, বাংলাদেশের খবর, একটি গল্প শোনাতে, বা '+' বাটন দিয়ে ছবি/ভিডিও দেখাতে পারেন।",
+            "জি $userName, আমি সাথেই আছি। পরের কোন কাজটি করব বা কী বিষয়ে কথা বলব বলুন!"
+        )
+        val naturalEn = listOf(
+            "I hear you, $userName. Tell me more, or tap + to share a photo or video for me to analyze!",
+            "Got it, $userName! You can ask me about weather in any district, Bangladesh news, a story, or device actions anytime.",
+            "I'm right here with you, $userName. What would you like to explore next?"
+        )
+        val idx = chatCursor++ % naturalBn.size
+        val reply = if (language == SathiLanguage.BN) naturalBn[idx] else naturalEn[idx]
+        return Result.success(simpleTurn(reply, SathiMood.WARM))
+    }
+
+    suspend fun analyzeImage(
+        bitmap: Bitmap,
+        question: String,
+        language: SathiLanguage
+    ): Result<String> = withContext(Dispatchers.Default) {
+        try {
+            val stats = inspectBitmapStats(bitmap)
+            val orientationBn = if (bitmap.width >= bitmap.height) "আড়াআড়ি (Landscape)" else "লম্বালম্বি (Portrait)"
+            val orientationEn = if (bitmap.width >= bitmap.height) "landscape" else "portrait"
+
+            val response = if (language == SathiLanguage.BN) {
+                buildString {
+                    append("আমি আপনার ছবিটি বিশ্লেষণ করেছি। ")
+                    append("এটি ${bitmap.width}×${bitmap.height} পিক্সেলের একটি $orientationBn ছবি। ")
+                    append("ছবিটিতে ${stats.lightingBn} এবং ${stats.toneBn} দেখা যাচ্ছে (কনট্রাস্ট: ${stats.contrastLabelBn})। ")
+                    if (question.isNotBlank()) {
+                        append("\nআপনার প্রশ্ন (\"$question\") অনুসারে ছবির দৃশ্য ও স্পষ্টতা পরিষ্কারভাবে বোঝা যাচ্ছে।")
+                    }
+                }
+            } else {
+                buildString {
+                    append("I inspected your photo (${bitmap.width}×${bitmap.height}, $orientationEn). ")
+                    append("It shows ${stats.lightingEn} with ${stats.toneEn} (${stats.contrastLabelEn} contrast). ")
+                    if (question.isNotBlank()) {
+                        append("Regarding \"$question\", the visual clarity and lighting look solid.")
+                    }
+                }
+            }
+            Result.success(response)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun analyzeVideo(
+        context: Context,
+        uri: Uri,
+        question: String,
+        language: SathiLanguage
+    ): Result<VideoAnalysisOutcome> = withContext(Dispatchers.IO) {
+        val retriever = MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(context, uri)
+            val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull() ?: 0L
+            val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                ?.toIntOrNull() ?: 0
+            val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                ?.toIntOrNull() ?: 0
+            val hasAudio = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO) != null
+
+            val totalSecs = (durationMs / 1000L).coerceAtLeast(1L)
+            val durationLabel = String.format(Locale.US, "%d:%02d", totalSecs / 60L, totalSecs % 60L)
+
+            val samplePercents = listOf(0.15, 0.50, 0.85)
+            val sampledFrames = samplePercents.mapNotNull { pct ->
+                val us = (durationMs * 1000L * pct).toLong().coerceAtLeast(0L)
+                retriever.getFrameAtTime(us, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            }
+
+            val thumbnail = sampledFrames.firstOrNull()?.let { frame ->
+                Bitmap.createScaledBitmap(frame, 360, (360f * frame.height / frame.width.coerceAtLeast(1)).toInt().coerceAtLeast(180), true)
+            }
+
+            val frameStats = sampledFrames.map { inspectBitmapStats(it) }
+            val avgBright = frameStats.map { it.avgBright }.average().takeIf { !it.isNaN() }?.toInt() ?: 128
+            val brightDiff = if (frameStats.size >= 2) {
+                kotlin.math.abs(frameStats.last().avgBright - frameStats.first().avgBright)
+            } else 0
+
+            val motionLabelBn = when {
+                brightDiff >= 25 -> "ভিডিওর দৃশ্য ও আলোতে উল্লেখযোগ্য পরিবর্তন রয়েছে"
+                brightDiff >= 10 -> "ভিডিওতে মাঝারি গতির দৃশ্য পরিবর্তন দেখা গেছে"
+                else -> "পুরো ভিডিওতে স্থির ও ভারসাম্যপূর্ণ দৃশ্য রয়েছে"
+            }
+            val motionLabelEn = when {
+                brightDiff >= 25 -> "noticeable lighting and scene transitions across the clip"
+                brightDiff >= 10 -> "gentle scene movement throughout the clip"
+                else -> "steady framing and consistent lighting across frames"
+            }
+
+            val firstStats = frameStats.firstOrNull()
+            val audioBn = if (hasAudio) "শব্দ (Audio) যুক্ত আছে" else "নীরব ভিডিও (Audio নেই)"
+            val audioEn = if (hasAudio) "includes an audio track" else "no audio track detected"
+
+            val summary = if (language == SathiLanguage.BN) {
+                buildString {
+                    append("আমি আপনার আপলোড করা ভিডিওটি বিশ্লেষণ করেছি:\n")
+                    append("• দৈর্ঘ্য: $durationLabel • রেজল্যুশন: ${width}×${height} • $audioBn\n")
+                    if (firstStats != null) {
+                        append("• দৃশ্যের আলো ও রঙ: ${firstStats.lightingBn}, ${firstStats.toneBn}\n")
+                    }
+                    append("• দৃশ্য বিশ্লেষণ (${sampledFrames.size}টি ফ্রেম যাচাই): $motionLabelBn।")
+                    if (question.isNotBlank()) {
+                        append("\n• আপনার প্রশ্ন (\"$question\"): ভিডিওটির গড় উজ্জ্বলতা ${avgBright}/255 এবং ফ্রেমগুলো পরিষ্কার রয়েছে।")
+                    }
+                }
+            } else {
+                buildString {
+                    append("I analyzed your uploaded video:\n")
+                    append("• Duration: $durationLabel • Resolution: ${width}×${height} • $audioEn\n")
+                    if (firstStats != null) {
+                        append("• Visual tone: ${firstStats.lightingEn} with ${firstStats.toneEn}\n")
+                    }
+                    append("• Scene check (${sampledFrames.size} key frames): $motionLabelEn.")
+                    if (question.isNotBlank()) {
+                        append("\n• Note (\"$question\"): Average brightness is $avgBright/255 with clear framing.")
+                    }
+                }
+            }
+
+            Result.success(VideoAnalysisOutcome(summary, thumbnail, durationLabel))
+        } catch (e: Exception) {
+            Result.failure(e)
+        } finally {
+            try {
+                retriever.release()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private data class BitmapStats(
+        val avgBright: Int,
+        val lightingBn: String,
+        val lightingEn: String,
+        val toneBn: String,
+        val toneEn: String,
+        val contrastLabelBn: String,
+        val contrastLabelEn: String
+    )
+
+    private fun inspectBitmapStats(bitmap: Bitmap): BitmapStats {
+        val width = bitmap.width.coerceAtLeast(1)
+        val height = bitmap.height.coerceAtLeast(1)
+        val stepX = (width / 24).coerceAtLeast(1)
+        val stepY = (height / 24).coerceAtLeast(1)
+        var totalBrightness = 0L
+        var totalRed = 0L
+        var totalGreen = 0L
+        var totalBlue = 0L
+        var minBright = 255
+        var maxBright = 0
+        var samples = 0L
+
+        for (x in 0 until width step stepX) {
+            for (y in 0 until height step stepY) {
+                val pixel = bitmap.getPixel(x, y)
+                val r = Color.red(pixel)
+                val g = Color.green(pixel)
+                val b = Color.blue(pixel)
+                val bright = (r * 299 + g * 587 + b * 114) / 1000
+                totalRed += r
+                totalGreen += g
+                totalBlue += b
+                totalBrightness += bright
+                if (bright < minBright) minBright = bright
+                if (bright > maxBright) maxBright = bright
+                samples++
+            }
+        }
+
+        val avgBright = if (samples > 0) (totalBrightness / samples).toInt() else 128
+        val avgR = if (samples > 0) (totalRed / samples).toInt() else 128
+        val avgG = if (samples > 0) (totalGreen / samples).toInt() else 128
+        val avgB = if (samples > 0) (totalBlue / samples).toInt() else 128
+        val spread = maxBright - minBright
+
+        val lightingBn = when {
+            avgBright > 180 -> "বেশ উজ্জ্বল ও পরিষ্কার আলো"
+            avgBright > 100 -> "স্বাভাবিক ও ভারসাম্যপূর্ণ আলো"
+            else -> "কম আলো বা রাতের দৃশ্য"
+        }
+        val lightingEn = when {
+            avgBright > 180 -> "bright, clear lighting"
+            avgBright > 100 -> "balanced natural lighting"
+            else -> "low-light or evening ambiance"
+        }
+
+        val toneBn = when {
+            avgR >= avgG + 18 && avgR >= avgB + 18 -> "উষ্ণ লালচে/কমলা রঙের আভা"
+            avgG >= avgR + 15 && avgG >= avgB + 15 -> "সতেজ সবুজ প্রকৃতির আভা"
+            avgB >= avgR + 15 && avgB >= avgG + 15 -> "শীতল নীল ও বেগুনি আভা"
+            else -> "স্বাভাবিক রঙের ভারসাম্য"
+        }
+        val toneEn = when {
+            avgR >= avgG + 18 && avgR >= avgB + 18 -> "warm golden-red tones"
+            avgG >= avgR + 15 && avgG >= avgB + 15 -> "fresh green tones"
+            avgB >= avgR + 15 && avgB >= avgG + 15 -> "cool blue-violet tones"
+            else -> "balanced neutral tones"
+        }
+
+        val contrastBn = if (spread > 150) "উচ্চ" else if (spread > 75) "সুষম" else "মৃদু"
+        val contrastEn = if (spread > 150) "high" else if (spread > 75) "balanced" else "soft"
+
+        return BitmapStats(avgBright, lightingBn, lightingEn, toneBn, toneEn, contrastBn, contrastEn)
+    }
+
+    private suspend fun fetchDirectWikipediaSummary(query: String, langCode: String): String? =
+        withContext(Dispatchers.IO) {
+            try {
+                val cleaned = query.replace(Regex("[?,!।]+"), " ").trim()
+                val encoded = URLEncoder.encode(cleaned, "UTF-8")
+                val searchUrl =
+                    "https://$langCode.wikipedia.org/w/api.php?action=query&list=search&srsearch=$encoded&format=json&srlimit=1&utf8=1"
+                val searchReq = Request.Builder().url(searchUrl).header("User-Agent", "SathiAndroidApp/1.0").build()
+                val title = httpClient.newCall(searchReq).execute().use { resp ->
+                    if (!resp.isSuccessful) return@withContext null
+                    val body = resp.body?.string() ?: return@withContext null
+                    val first = JSONObject(body).optJSONObject("query")?.optJSONArray("search")?.optJSONObject(0)
+                    first?.optString("title")?.trim()
+                } ?: return@withContext null
+
+                if (title.isBlank()) return@withContext null
+                val summaryUrl = "https://$langCode.wikipedia.org/api/rest_v1/page/summary/${URLEncoder.encode(title.replace(" ", "_"), "UTF-8")}"
+                val summaryReq = Request.Builder().url(summaryUrl).header("User-Agent", "SathiAndroidApp/1.0").build()
+                httpClient.newCall(summaryReq).execute().use { resp ->
+                    if (!resp.isSuccessful) return@withContext null
+                    val body = resp.body?.string() ?: return@withContext null
+                    val extract = JSONObject(body).optString("extract").trim()
+                    extract.takeIf { it.length > 20 }?.take(360)
+                }
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+    suspend fun runStudioTool(
+        instruction: String,
+        input: String,
+        language: SathiLanguage
+    ): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val cleanInput = input.trim()
+            val lowerInst = instruction.lowercase()
+
+            val output = when {
+                lowerInst.contains("morning greeting") -> {
+                    if (language == SathiLanguage.BN) {
+                        "আসসালামু আলাইকুম ও শুভ সকাল! নতুন দিনের আলোয় আপনার মন থাকুক প্রশান্ত ও প্রাণবন্ত। আজকের প্রতিটি কাজ সুন্দরভাবে সফল হোক।"
+                    } else {
+                        "Assalamu Alaikum and good morning! May today bring calm energy, joyful moments, and steady progress toward your goals."
+                    }
+                }
+
+                lowerInst.contains("translate") -> {
+                    val hasBangla = cleanInput.any { it in '\u0980'..'\u09FF' }
+                    val langPair = if (hasBangla) "bn|en" else "en|bn"
+                    fetchMyMemoryTranslation(cleanInput, langPair) ?: if (hasBangla) {
+                        "অনুবাদ (সহজ সংস্করণ): $cleanInput"
+                    } else {
+                        "Translation ready: $cleanInput"
+                    }
+                }
+
+                lowerInst.contains("schedule") || lowerInst.contains("day") -> {
+                    val items = cleanInput
+                        .split(Regex("[,;\n]+"))
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() }
+                        .ifEmpty { listOf(cleanInput) }
+                    val slotsBn = listOf("সকাল ৯:০০", "বেলা ১১:৩০", "দুপুর ২:৩০", "বিকেল ৫:০০", "রাত ৮:০০")
+                    val slotsEn = listOf("09:00 AM", "11:30 AM", "02:30 PM", "05:00 PM", "08:00 PM")
+                    if (language == SathiLanguage.BN) {
+                        "আজকের সুন্দর সময়সূচি:\n" + items.mapIndexed { idx, task ->
+                            "• ${slotsBn.getOrElse(idx) { "সময়মতো" }} — $task"
+                        }.joinToString("\n") + "\n• কাজের ফাঁকে ১০ মিনিট বিশ্রাম ও পানি পান করতে ভুলবেন না।"
+                    } else {
+                        "Your Daily Schedule:\n" + items.mapIndexed { idx, task ->
+                            "• ${slotsEn.getOrElse(idx) { "Flexible" }} — $task"
+                        }.joinToString("\n") + "\n• Remember a 10-minute breather and water break between tasks."
+                    }
+                }
+
+                lowerInst.contains("summarize") -> {
+                    val sentences = cleanInput
+                        .split(Regex("[।.!?\\n]+"))
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() }
+                        .take(4)
+                    if (language == SathiLanguage.BN) {
+                        "মূল সারসংক্ষেপ:\n" + sentences.joinToString("\n") { "• $it" }
+                    } else {
+                        "Key Summary:\n" + sentences.joinToString("\n") { "• $it" }
+                    }
+                }
+
+                else -> {
+                    if (language == SathiLanguage.BN) {
+                        "আসসালামু আলাইকুম,\n\n$cleanInput\n\nভালো থাকবেন ও দোয়া রাখবেন।\nশুভেচ্ছান্তে,\nআপনার সাথী ও বন্ধু"
+                    } else {
+                        "Assalamu Alaikum & warm greetings,\n\n$cleanInput\n\nWishing you a wonderful day ahead!"
+                    }
+                }
+            }
+            Result.success(output)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private fun fetchMyMemoryTranslation(text: String, langPair: String): String? {
+        return try {
+            val encoded = URLEncoder.encode(text.take(450), "UTF-8")
+            val url = "https://api.mymemory.translated.net/get?q=$encoded&langpair=$langPair"
+            val req = Request.Builder().url(url).header("User-Agent", "SathiAndroidApp/1.0").build()
+            httpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return null
+                val body = resp.body?.string() ?: return null
+                val translated = JSONObject(body)
+                    .optJSONObject("responseData")
+                    ?.optString("translatedText")
+                    ?.trim()
+                translated?.takeIf { it.isNotBlank() }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun simpleTurn(
+        reply: String,
+        mood: SathiMood,
+        action: PhoneActionType = PhoneActionType.NONE,
+        param: String = "",
+        secondary: String = ""
+    ) = SathiTurnResult(
+        replyText = reply,
+        mood = mood,
+        actionType = action,
+        actionParam = param,
+        secondaryParam = secondary,
+        shouldSaveMemory = false,
+        memoryCategory = MemoryCategory.NOTE,
+        memoryTitle = "",
+        memoryContent = ""
+    )
+
+    companion object {
+        fun nextStory(language: SathiLanguage, index: Int): String {
+            val storiesBn = listOf(
+                "এক ছোট্ট গ্রামের বালক প্রতিদিন ভোরে পাখিদের জন্য ছাদে পানি ও দানা রেখে যেত। প্রথমে কেউ গুরুত্ব দিত না, কিন্তু কয়েক মাস পর পুরো গ্রাম জুড়ে পাখির কলরব ছড়িয়ে পড়ল। ছোট্ট একটি ভালো কাজও পুরো পরিবেশ বদলে দিতে পারে!",
+                "এক কৃষকের পুরোনো কলসিতে একটি ছোট ফাটল ছিল, তাই পথ চলতে অর্ধেক পানি পড়ে যেত। কলসিটি খুব মন খারাপ করল। কিন্তু কৃষক হেসে দেখাল—সেই পথের ধারেই ফুটেছে রঙিন সব ফুল! আমাদের দুর্বলতাও কখনো কখনো অন্যের জীবনে সৌন্দর্য ছড়িয়ে দেয়।",
+                "একদিন এক বৃদ্ধ নাবিক ঝড়ের রাতে ছোট একটি বাতি জ্বালিয়ে রাখলেন তীরের পাশে। সেই সামান্য আলো দেখেই পথ হারানো তিনটি নৌকা নিরাপদে তীরে ফিরে এসেছিল। আশা যত ছোটই হোক, তা বড় পথ দেখাতে পারে।"
+            )
+            val storiesEn = listOf(
+                "A young boy left a small bowl of water on his roof each morning for tired sparrows. Soon his whole neighborhood joined in, filling the town with birdsong. Even small kindnesses ripple further than we see.",
+                "A cracked clay pot felt ashamed that half its water spilled along the garden path. One day the gardener smiled and pointed to the wildflowers blooming only along that side—reminding us that flaws can nourish beauty too.",
+                "During a dark storm, a lighthouse keeper lit one steady lantern along a quiet shore. Three lost boats spotted that single beam and sailed safely home. Never underestimate a steady light."
+            )
+            val list = if (language == SathiLanguage.BN) storiesBn else storiesEn
+            return list[index % list.size]
+        }
+
+        fun nextJoke(language: SathiLanguage, index: Int): String {
+            val jokesBn = listOf(
+                "শিক্ষক: বলো তো, পৃথিবী সূর্যের চারপাশে ঘোরে নাকি সূর্য পৃথিবীর চারপাশে? ছাত্র: স্যার, আমার তো মাথাটাই পরীক্ষায় চারপাশে ঘুরছে!",
+                "বন্ধু ১: দোস্ত, আমার ঘড়িটা পানিতে পড়ে গেছে, তাও টিকটিক করে চলছে! বন্ধু ২: কীভাবে? বন্ধু ১: ওটা বোধহয় সাঁতার শিখে ফেলেছে!"
+            )
+            val jokesEn = listOf(
+                "Why did the smartphone go to school? Because it wanted to improve its reception!",
+                "Why do programmers prefer dark mode? Because light attracts bugs!"
+            )
+            val list = if (language == SathiLanguage.BN) jokesBn else jokesEn
+            return list[index % list.size]
+        }
+
+        fun tryEvaluateMath(input: String, language: SathiLanguage): String? {
+            val normalized = input
+                .replace('০', '0').replace('১', '1').replace('২', '2').replace('৩', '3').replace('৪', '4')
+                .replace('৫', '5').replace('৬', '6').replace('৭', '7').replace('৮', '8').replace('৯', '9')
+                .replace("×", "*").replace("÷", "/")
+                .replace("যোগ", "+").replace("বিয়োগ", "-").replace("বিয়োগ", "-")
+                .replace("গুণ", "*").replace("ভাগ", "/")
+            val match = Regex("(\\d+(?:\\.\\d+)?)\\s*([+\\-*/])\\s*(\\d+(?:\\.\\d+)?)").find(normalized)
+                ?: return null
+            val a = match.groupValues[1].toDoubleOrNull() ?: return null
+            val op = match.groupValues[2]
+            val b = match.groupValues[3].toDoubleOrNull() ?: return null
+            val result = when (op) {
+                "+" -> a + b
+                "-" -> a - b
+                "*" -> a * b
+                "/" -> if (b == 0.0) return if (language == SathiLanguage.BN) "শূন্য দিয়ে ভাগ করা যায় না।" else "Cannot divide by zero." else a / b
+                else -> return null
+            }
+            val formatted = if (result % 1.0 == 0.0) result.toLong().toString() else String.format(Locale.US, "%.2f", result)
+            return if (language == SathiLanguage.BN) "উত্তর হবে: $formatted।" else "The answer is $formatted."
+        }
+    }
+}

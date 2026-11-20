@@ -1,0 +1,415 @@
+package com.example.data
+
+import com.example.model.SathiLanguage
+import com.example.model.WebSource
+import java.net.URLEncoder
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONObject
+import org.xmlpull.v1.XmlPullParser
+import org.xmlpull.v1.XmlPullParserFactory
+
+class WebSearchService {
+    private val client: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(12, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .build()
+    }
+
+    suspend fun searchWeb(query: String, language: SathiLanguage): List<WebSource> =
+        withContext(Dispatchers.IO) {
+            val trimmed = query.trim()
+            if (trimmed.isEmpty()) return@withContext emptyList()
+
+            val lower = trimmed.lowercase()
+
+            // 1. Live weather query -> Open-Meteo Geocoding + Forecast (all Bangladesh + world, no noisy Wiki districts!)
+            if (isWeatherQuery(lower)) {
+                val weather = fetchLiveWeatherWithGeocoding(trimmed, language)
+                if (weather != null) {
+                    return@withContext listOf(weather)
+                }
+            }
+
+            // 2. Live news / sports / scores -> Google News RSS for Bangladesh + Global + Wikipedia context
+            val results = mutableListOf<WebSource>()
+            if (isNewsOrScoreQuery(lower)) {
+                results.addAll(fetchGoogleNewsRss(trimmed, language))
+            }
+
+            // 3. Wikipedia (Bengali + English fallback) for facts, people, places, knowledge
+            val wikiLang = if (language == SathiLanguage.BN || trimmed.any { it in '\u0980'..'\u09FF' }) "bn" else "en"
+            if (results.size < 3) {
+                results.addAll(fetchWikipediaSources(trimmed, wikiLang))
+            }
+            if (results.isEmpty() && wikiLang == "bn") {
+                results.addAll(fetchWikipediaSources(trimmed, "en"))
+            }
+
+            // 4. Google News fallback for general current events if Wikipedia had nothing
+            if (results.isEmpty()) {
+                results.addAll(fetchGoogleNewsRss(trimmed, language))
+            }
+
+            // 5. DuckDuckGo Instant Answer fallback
+            if (results.size < 2) {
+                fetchDuckDuckGoSource(trimmed)?.let { results.add(it) }
+            }
+
+            results.distinctBy { it.url }.take(4)
+        }
+
+    private fun isWeatherQuery(lower: String): Boolean =
+        lower.contains("weather") || lower.contains("আবহাওয়া") || lower.contains("আবহাওয়া") ||
+            lower.contains("temperature") || lower.contains("তাপমাত্রা") || lower.contains("বৃষ্টি") ||
+            lower.contains("গরম") || lower.contains("শীত")
+
+    private fun isNewsOrScoreQuery(lower: String): Boolean =
+        lower.contains("news") || lower.contains("খবর") || lower.contains("সংবাদ") ||
+            lower.contains("score") || lower.contains("স্কোর") || lower.contains("খেলা") ||
+            lower.contains("cricket") || lower.contains("ক্রিকেট") || lower.contains("football") ||
+            lower.contains("ফুটবল") || lower.contains("আজকের") || lower.contains("today")
+
+    private fun fetchLiveWeatherWithGeocoding(query: String, language: SathiLanguage): WebSource? {
+        return try {
+            val resolved = resolveLocation(query)
+            val url = "https://api.open-meteo.com/v1/forecast" +
+                "?latitude=${resolved.lat}&longitude=${resolved.lon}" +
+                "&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m" +
+                "&timezone=auto"
+            val req = Request.Builder().url(url).header("User-Agent", "SathiAndroidApp/1.0").build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return null
+                val body = resp.body?.string() ?: return null
+                val current = JSONObject(body).optJSONObject("current") ?: return null
+                val temp = current.optDouble("temperature_2m", Double.NaN)
+                val feels = current.optDouble("apparent_temperature", temp)
+                val humidity = current.optInt("relative_humidity_2m", -1)
+                val wind = current.optDouble("wind_speed_10m", Double.NaN)
+                val wCode = current.optInt("weather_code", 0)
+                if (temp.isNaN()) return null
+
+                val condBn = weatherCodeToBn(wCode)
+                val condEn = weatherCodeToEn(wCode)
+
+                val title = if (language == SathiLanguage.BN) {
+                    "${resolved.displayName} - লাইভ আবহাওয়া"
+                } else {
+                    "${resolved.displayName} Live Weather"
+                }
+                val snippet = if (language == SathiLanguage.BN) {
+                    "অবস্থা: $condBn • তাপমাত্রা: ${temp}°C (অনুভূত ${feels}°C), আর্দ্রতা: ${humidity}%, বাতাস: ${wind} km/h।"
+                } else {
+                    "Condition: $condEn • Temp: ${temp}°C (feels ${feels}°C), Humidity: ${humidity}%, Wind: ${wind} km/h."
+                }
+                WebSource(
+                    title = title,
+                    snippet = snippet,
+                    url = "https://open-meteo.com/"
+                )
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private data class ResolvedCity(val displayName: String, val lat: Double, val lon: Double)
+
+    private fun resolveLocation(query: String): ResolvedCity {
+        val lower = query.lowercase()
+
+        // Fast check across Bangladesh divisions & major districts in Bengali or English
+        for ((pattern, englishName, coords) in bdDistrictEntries) {
+            if (lower.contains(pattern)) {
+                return ResolvedCity(englishName, coords.first, coords.second)
+            }
+        }
+
+        // Clean weather words from query to extract any custom city/upazila/world location for Open-Meteo Geocoding
+        val candidate = extractCityCandidate(query)
+        if (candidate.isNotBlank()) {
+            geocodeCity(candidate)?.let { return it }
+        }
+
+        // Default fallback to Dhaka if no city was specified in "আজকের আবহাওয়া কেমন?"
+        return ResolvedCity("Dhaka / ঢাকা", 23.8103, 90.4125)
+    }
+
+    private fun extractCityCandidate(raw: String): String {
+        return raw
+            .replace(Regex("(weather|forecast|temperature|today|now|in|of|at)", RegexOption.IGNORE_CASE), " ")
+            .replace(Regex("(আবহাওয়া|আবহাওয়া|তাপমাত্রা|কেমন|আজকের|আজ|এখন|বৃষ্টি|হবে|কি|কী|বলো|জানাও|ের|র\\b)"), " ")
+            .replace(Regex("[?,!।]+"), " ")
+            .trim()
+            .replace(Regex("\\s+"), " ")
+            .take(50)
+    }
+
+    private fun geocodeCity(name: String): ResolvedCity? {
+        return try {
+            val encoded = URLEncoder.encode(name, "UTF-8")
+            val url = "https://geocoding-api.open-meteo.com/v1/search?name=$encoded&count=1&language=en&format=json"
+            val req = Request.Builder().url(url).header("User-Agent", "SathiAndroidApp/1.0").build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return null
+                val body = resp.body?.string() ?: return null
+                val first = JSONObject(body).optJSONArray("results")?.optJSONObject(0) ?: return null
+                val city = first.optString("name").trim()
+                val country = first.optString("country").trim()
+                val lat = first.optDouble("latitude", Double.NaN)
+                val lon = first.optDouble("longitude", Double.NaN)
+                if (city.isBlank() || lat.isNaN() || lon.isNaN()) return null
+                val label = if (country.isNotBlank()) "$city, $country" else city
+                ResolvedCity(label, lat, lon)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun fetchGoogleNewsRss(query: String, language: SathiLanguage): List<WebSource> {
+        return try {
+            val cleanQuery = query
+                .replace(Regex("(আজকের|খবর|সংবাদ|জানাও|বলো|দাও|news|latest|today)", RegexOption.IGNORE_CASE), "")
+                .trim()
+            val url = if (cleanQuery.isBlank() || cleanQuery.length < 3) {
+                if (language == SathiLanguage.BN) {
+                    "https://news.google.com/rss?hl=bn&gl=BD&ceid=BD:bn"
+                } else {
+                    "https://news.google.com/rss?hl=en-BD&gl=BD&ceid=BD:en"
+                }
+            } else {
+                val encoded = URLEncoder.encode(cleanQuery, "UTF-8")
+                if (language == SathiLanguage.BN) {
+                    "https://news.google.com/rss/search?q=$encoded&hl=bn&gl=BD&ceid=BD:bn"
+                } else {
+                    "https://news.google.com/rss/search?q=$encoded&hl=en-BD&gl=BD&ceid=BD:en"
+                }
+            }
+
+            val req = Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return emptyList()
+                val xml = resp.body?.string() ?: return emptyList()
+                parseRssItems(xml).take(4)
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun parseRssItems(xml: String): List<WebSource> {
+        val items = mutableListOf<WebSource>()
+        try {
+            val parser = XmlPullParserFactory.newInstance().newPullParser()
+            parser.setInput(xml.reader())
+            var inItem = false
+            var currentTag = ""
+            var title = ""
+            var link = ""
+            var pubDate = ""
+            var sourceName = ""
+
+            var eventType = parser.eventType
+            while (eventType != XmlPullParser.END_DOCUMENT && items.size < 4) {
+                when (eventType) {
+                    XmlPullParser.START_TAG -> {
+                        currentTag = parser.name.orEmpty()
+                        if (currentTag == "item") {
+                            inItem = true
+                            title = ""
+                            link = ""
+                            pubDate = ""
+                            sourceName = ""
+                        }
+                    }
+                    XmlPullParser.TEXT -> {
+                        if (inItem) {
+                            val text = parser.text.orEmpty().trim()
+                            when (currentTag) {
+                                "title" -> title += text
+                                "link" -> link += text
+                                "pubDate" -> pubDate += text
+                                "source" -> sourceName += text
+                            }
+                        }
+                    }
+                    XmlPullParser.END_TAG -> {
+                        if (parser.name == "item" && inItem) {
+                            if (title.isNotBlank() && link.isNotBlank()) {
+                                val meta = listOf(sourceName.trim(), pubDate.take(16).trim())
+                                    .filter { it.isNotBlank() }
+                                    .joinToString(" • ")
+                                items.add(
+                                    WebSource(
+                                        title = title.trim(),
+                                        snippet = meta.ifBlank { "Google News Bangladesh" },
+                                        url = link.trim()
+                                    )
+                                )
+                            }
+                            inItem = false
+                        }
+                        currentTag = ""
+                    }
+                }
+                eventType = parser.next()
+            }
+        } catch (_: Exception) {
+        }
+        return items
+    }
+
+    private fun fetchWikipediaSources(query: String, langCode: String): List<WebSource> {
+        return try {
+            val cleaned = query
+                .replace(Regex("[?,!।]+"), " ")
+                .trim()
+            val encoded = URLEncoder.encode(cleaned, "UTF-8")
+            val url =
+                "https://$langCode.wikipedia.org/w/api.php?action=query&list=search&srsearch=$encoded&format=json&srlimit=3&utf8=1"
+            val req = Request.Builder().url(url).header("User-Agent", "SathiAndroidApp/1.0").build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return emptyList()
+                val body = resp.body?.string() ?: return emptyList()
+                val searchArray = JSONObject(body)
+                    .optJSONObject("query")
+                    ?.optJSONArray("search") ?: return emptyList()
+
+                buildList {
+                    for (i in 0 until searchArray.length()) {
+                        val item = searchArray.getJSONObject(i)
+                        val title = item.optString("title").trim()
+                        val rawSnippet = item.optString("snippet")
+                            .replace(Regex("<[^>]*>"), "")
+                            .replace("&quot;", "\"")
+                            .replace("&amp;", "&")
+                            .trim()
+                        if (title.isNotEmpty()) {
+                            val pageUrl = "https://$langCode.wikipedia.org/wiki/${URLEncoder.encode(title.replace(" ", "_"), "UTF-8")}"
+                            add(WebSource(title = title, snippet = rawSnippet, url = pageUrl))
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun fetchDuckDuckGoSource(query: String): WebSource? {
+        return try {
+            val encoded = URLEncoder.encode(query, "UTF-8")
+            val url = "https://api.duckduckgo.com/?q=$encoded&format=json&no_html=1&skip_disambig=1"
+            val req = Request.Builder().url(url).header("User-Agent", "SathiAndroidApp/1.0").build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return null
+                val body = resp.body?.string() ?: return null
+                val json = JSONObject(body)
+                val abstractText = json.optString("AbstractText").trim()
+                val abstractUrl = json.optString("AbstractURL").trim()
+                val heading = json.optString("Heading").trim()
+                if (abstractText.isNotEmpty() && abstractUrl.isNotEmpty()) {
+                    WebSource(
+                        title = heading.ifBlank { query },
+                        snippet = abstractText.take(280),
+                        url = abstractUrl
+                    )
+                } else null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun weatherCodeToBn(code: Int): String = when (code) {
+        0 -> "পরিষ্কার আকাশ"
+        1, 2 -> "হালকা মেঘলা"
+        3 -> "মেঘলা আকাশ"
+        45, 48 -> "কুয়াশা"
+        51, 53, 55, 61, 63, 65 -> "বৃষ্টি"
+        80, 81, 82 -> "দমকা বৃষ্টি"
+        95, 96, 99 -> "বজ্রসহ বৃষ্টি"
+        else -> "স্বাভাবিক আবহাওয়া"
+    }
+
+    private fun weatherCodeToEn(code: Int): String = when (code) {
+        0 -> "Clear sky"
+        1, 2 -> "Partly cloudy"
+        3 -> "Overcast"
+        45, 48 -> "Foggy"
+        51, 53, 55, 61, 63, 65 -> "Rain"
+        80, 81, 82 -> "Rain showers"
+        95, 96, 99 -> "Thunderstorm"
+        else -> "Moderate weather"
+    }
+
+    private data class BdDistrictEntry(val pattern: String, val displayName: String, val coords: Pair<Double, Double>)
+
+    private val bdDistrictEntries = listOf(
+        BdDistrictEntry("খুলনা", "Khulna / খুলনা", 22.8456 to 89.5403),
+        BdDistrictEntry("khulna", "Khulna / খুলনা", 22.8456 to 89.5403),
+        BdDistrictEntry("চট্টগ্রাম", "Chattogram / চট্টগ্রাম", 22.3569 to 91.7832),
+        BdDistrictEntry("chattogram", "Chattogram / চট্টগ্রাম", 22.3569 to 91.7832),
+        BdDistrictEntry("chittagong", "Chattogram / চট্টগ্রাম", 22.3569 to 91.7832),
+        BdDistrictEntry("সিলেট", "Sylhet / সিলেট", 24.8949 to 91.8687),
+        BdDistrictEntry("sylhet", "Sylhet / সিলেট", 24.8949 to 91.8687),
+        BdDistrictEntry("রাজশাহী", "Rajshahi / রাজশাহী", 24.3745 to 88.6042),
+        BdDistrictEntry("rajshahi", "Rajshahi / রাজশাহী", 24.3745 to 88.6042),
+        BdDistrictEntry("বরিশাল", "Barishal / বরিশাল", 22.7010 to 90.3535),
+        BdDistrictEntry("barishal", "Barishal / বরিশাল", 22.7010 to 90.3535),
+        BdDistrictEntry("barisal", "Barishal / বরিশাল", 22.7010 to 90.3535),
+        BdDistrictEntry("রংপুর", "Rangpur / রংপুর", 25.7439 to 89.2752),
+        BdDistrictEntry("rangpur", "Rangpur / রংপুর", 25.7439 to 89.2752),
+        BdDistrictEntry("ময়মনসিংহ", "Mymensingh / ময়মনসিংহ", 24.7471 to 90.4203),
+        BdDistrictEntry("ময়মনসিংহ", "Mymensingh / ময়মনসিংহ", 24.7471 to 90.4203),
+        BdDistrictEntry("mymensingh", "Mymensingh / ময়মনসিংহ", 24.7471 to 90.4203),
+        BdDistrictEntry("কুমিল্লা", "Cumilla / কুমিল্লা", 23.4607 to 91.1809),
+        BdDistrictEntry("cumilla", "Cumilla / কুমিল্লা", 23.4607 to 91.1809),
+        BdDistrictEntry("comilla", "Cumilla / কুমিল্লা", 23.4607 to 91.1809),
+        BdDistrictEntry("কক্সবাজার", "Cox's Bazar / কক্সবাজার", 21.4272 to 92.0058),
+        BdDistrictEntry("cox", "Cox's Bazar / কক্সবাজার", 21.4272 to 92.0058),
+        BdDistrictEntry("বগুড়া", "Bogura / বগুড়া", 24.8465 to 89.3773),
+        BdDistrictEntry("বগুড়া", "Bogura / বগুড়া", 24.8465 to 89.3773),
+        BdDistrictEntry("bogura", "Bogura / বগুড়া", 24.8465 to 89.3773),
+        BdDistrictEntry("যশোর", "Jashore / যশোর", 23.1664 to 89.2081),
+        BdDistrictEntry("jashore", "Jashore / যশোর", 23.1664 to 89.2081),
+        BdDistrictEntry("jessore", "Jashore / যশোর", 23.1664 to 89.2081),
+        BdDistrictEntry("সাতক্ষীরা", "Satkhira / সাতক্ষীরা", 22.7185 to 89.0705),
+        BdDistrictEntry("satkhira", "Satkhira / সাতক্ষীরা", 22.7185 to 89.0705),
+        BdDistrictEntry("বাগেরহাট", "Bagerhat / বাগেরহাট", 22.6516 to 89.7859),
+        BdDistrictEntry("bagerhat", "Bagerhat / বাগেরহাট", 22.6516 to 89.7859),
+        BdDistrictEntry("গাজীপুর", "Gazipur / গাজীপুর", 23.9999 to 90.4203),
+        BdDistrictEntry("gazipur", "Gazipur / গাজীপুর", 23.9999 to 90.4203),
+        BdDistrictEntry("নারায়ণগঞ্জ", "Narayanganj / নারায়ণগঞ্জ", 23.6238 to 90.5000),
+        BdDistrictEntry("নারায়ণগঞ্জ", "Narayanganj / নারায়ণগঞ্জ", 23.6238 to 90.5000),
+        BdDistrictEntry("narayanganj", "Narayanganj / নারায়ণগঞ্জ", 23.6238 to 90.5000),
+        BdDistrictEntry("টাঙ্গাইল", "Tangail / টাঙ্গাইল", 24.2513 to 89.9167),
+        BdDistrictEntry("tangail", "Tangail / টাঙ্গাইল", 24.2513 to 89.9167),
+        BdDistrictEntry("ফরিদপুর", "Faridpur / ফরিদপুর", 23.6071 to 89.8429),
+        BdDistrictEntry("faridpur", "Faridpur / ফরিদপুর", 23.6071 to 89.8429),
+        BdDistrictEntry("নোয়াখালী", "Noakhali / নোয়াখালী", 22.8696 to 91.0994),
+        BdDistrictEntry("নোয়াখালী", "Noakhali / নোয়াখালী", 22.8696 to 91.0994),
+        BdDistrictEntry("noakhali", "Noakhali / নোয়াখালী", 22.8696 to 91.0994),
+        BdDistrictEntry("দিনাজপুর", "Dinajpur / দিনাজপুর", 25.6279 to 88.6332),
+        BdDistrictEntry("dinajpur", "Dinajpur / দিনাজপুর", 25.6279 to 88.6332),
+        BdDistrictEntry("পাবনা", "Pabna / পাবনা", 24.0064 to 89.2372),
+        BdDistrictEntry("pabna", "Pabna / পাবনা", 24.0064 to 89.2372),
+        BdDistrictEntry("কুষ্টিয়া", "Kushtia / কুষ্টিয়া", 23.9013 to 89.1205),
+        BdDistrictEntry("কুষ্টিয়া", "Kushtia / কুষ্টিয়া", 23.9013 to 89.1205),
+        BdDistrictEntry("kushtia", "Kushtia / কুষ্টিয়া", 23.9013 to 89.1205),
+        BdDistrictEntry("নড়াইল", "Narail / নড়াইল", 23.1725 to 89.5127),
+        BdDistrictEntry("নড়াইল", "Narail / নড়াইল", 23.1725 to 89.5127),
+        BdDistrictEntry("narail", "Narail / নড়াইল", 23.1725 to 89.5127),
+        BdDistrictEntry("ফেনী", "Feni / ফেনী", 23.0159 to 91.3976),
+        BdDistrictEntry("feni", "Feni / ফেনী", 23.0159 to 91.3976),
+        BdDistrictEntry("কলকাতা", "Kolkata / কলকাতা", 22.5726 to 88.3639),
+        BdDistrictEntry("kolkata", "Kolkata / কলকাতা", 22.5726 to 88.3639),
+        BdDistrictEntry("ঢাকা", "Dhaka / ঢাকা", 23.8103 to 90.4125),
+        BdDistrictEntry("dhaka", "Dhaka / ঢাকা", 23.8103 to 90.4125)
+    )
+}
