@@ -46,6 +46,7 @@ class VoiceController(
     private var preferOfflineRecognition: Boolean = false
     private var liveAutoListenAfterTts: Boolean = false
     private var consecutiveLiveSilenceCount: Int = 0
+    private var lastPartialTranscript: String = ""
 
     init {
         initTts()
@@ -61,6 +62,7 @@ class VoiceController(
 
                     override fun onDone(utteranceId: String?) {
                         _state.value = _state.value.copy(speaking = false)
+                        consecutiveLiveSilenceCount = 0
                         if (_state.value.liveSessionActive && liveAutoListenAfterTts) {
                             liveAutoListenAfterTts = false
                             mainHandler.postDelayed({
@@ -98,6 +100,7 @@ class VoiceController(
     fun stopLiveSession() {
         liveAutoListenAfterTts = false
         consecutiveLiveSilenceCount = 0
+        lastPartialTranscript = ""
         _state.value = _state.value.copy(liveSessionActive = false)
         stopListening()
         stopSpeaking()
@@ -122,6 +125,7 @@ class VoiceController(
         preferOfflineRecognition = preferOffline
         mainHandler.post {
             liveAutoListenAfterTts = false
+            lastPartialTranscript = ""
             stopSpeakingInternal()
             _state.value = _state.value.copy(speechErrorMessage = null, partialTranscript = "")
 
@@ -155,29 +159,40 @@ class VoiceController(
                         }
 
                         override fun onError(error: Int) {
+                            val rescued = lastPartialTranscript.trim()
+                            lastPartialTranscript = ""
                             val isTimeoutOrNoMatch = error == SpeechRecognizer.ERROR_NO_MATCH ||
                                 error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
-                            if (_state.value.liveSessionActive && isTimeoutOrNoMatch && consecutiveLiveSilenceCount < 3) {
+
+                            if (isTimeoutOrNoMatch && rescued.length >= 2) {
+                                consecutiveLiveSilenceCount = 0
+                                _state.value = _state.value.copy(listening = false, partialTranscript = rescued)
+                                onFinalTranscript(rescued)
+                                return
+                            }
+
+                            if (_state.value.liveSessionActive && isTimeoutOrNoMatch && consecutiveLiveSilenceCount < 8) {
                                 consecutiveLiveSilenceCount++
                                 _state.value = _state.value.copy(listening = false, speechErrorMessage = null)
                                 mainHandler.postDelayed({
                                     if (_state.value.liveSessionActive && !_state.value.speaking) {
                                         startListeningInternal(activeLanguage, preferOfflineRecognition)
                                     }
-                                }, 280L)
+                                }, 320L)
                                 return
                             }
 
                             val msg = mapSpeechError(error, activeLanguage)
                             _state.value = _state.value.copy(
                                 listening = false,
-                                liveSessionActive = if (isTimeoutOrNoMatch) _state.value.liveSessionActive else false,
+                                liveSessionActive = false,
                                 speechErrorMessage = msg
                             )
                         }
 
                         override fun onResults(results: Bundle?) {
                             consecutiveLiveSilenceCount = 0
+                            lastPartialTranscript = ""
                             val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                             val spoken = matches?.firstOrNull()?.trim().orEmpty()
                             _state.value = _state.value.copy(
@@ -191,7 +206,7 @@ class VoiceController(
                                     if (_state.value.liveSessionActive && !_state.value.speaking) {
                                         startListeningInternal(activeLanguage, preferOfflineRecognition)
                                     }
-                                }, 300L)
+                                }, 320L)
                             }
                         }
 
@@ -199,8 +214,10 @@ class VoiceController(
                             val partial = partialResults
                                 ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                                 ?.firstOrNull()
+                                ?.trim()
                                 .orEmpty()
                             if (partial.isNotBlank()) {
+                                lastPartialTranscript = partial
                                 _state.value = _state.value.copy(partialTranscript = partial)
                             }
                         }
@@ -216,9 +233,9 @@ class VoiceController(
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, localeTag)
                     putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                     putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2200L)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1600L)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1200L)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1100L)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 400L)
                     if (preferOffline) {
                         putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
                     }

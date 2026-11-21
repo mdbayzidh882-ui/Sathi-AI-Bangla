@@ -35,6 +35,7 @@ import com.example.model.SathiVoiceProfile
 import com.example.model.UserMemory
 import com.example.model.UserProfile
 import com.example.model.WebSource
+import com.example.overlay.SathiScreenShareService
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -239,6 +240,55 @@ class SathiViewModel(
         }
     }
 
+    fun analyzeSharedScreen(question: String = "") {
+        val lang = currentLanguage()
+        val voice = currentVoice()
+        val promptLabel = question.trim().ifBlank {
+            if (lang == SathiLanguage.BN) "আমার শেয়ার করা স্ক্রিনটি দেখো" else "Look at my shared screen"
+        }
+        _isThinking.value = true
+        viewModelScope.launch {
+            try {
+                val frame = SathiScreenShareService.captureLatestFrame()
+                if (frame == null) {
+                    val errText = if (lang == SathiLanguage.BN) {
+                        "এখন স্ক্রিনের ছবি পাওয়া যায়নি। '+' বাটন থেকে স্ক্রিন শেয়ার চালু করে আবার চেষ্টা করুন।"
+                    } else {
+                        "Could not capture a frame yet. Make sure Screen Share is active via + and try again."
+                    }
+                    appendSathiErrorReply(errText, lang, voice, speakReply = true)
+                    return@launch
+                }
+                val thumb = Bitmap.createScaledBitmap(
+                    frame,
+                    240,
+                    (240f * frame.height / frame.width.coerceAtLeast(1)).toInt().coerceAtLeast(160),
+                    true
+                )
+                _messages.value = _messages.value + ChatMessage(
+                    id = UUID.randomUUID().toString(),
+                    isUser = true,
+                    text = promptLabel,
+                    mediaThumbnail = thumb,
+                    mediaBadge = if (lang == SathiLanguage.BN) "লাইভ স্ক্রিন" else "Live Screen"
+                )
+                val res = aiService.analyzeImage(frame, question, lang, isScreenCapture = true)
+                val reply = res.getOrElse {
+                    if (lang == SathiLanguage.BN) "স্ক্রিনটি বিশ্লেষণ করা যায়নি।" else "Could not analyze screen."
+                }
+                _messages.value = _messages.value + ChatMessage(
+                    id = UUID.randomUUID().toString(),
+                    isUser = false,
+                    text = reply,
+                    mood = SathiMood.WARM
+                )
+                voiceController.speak(reply, lang, voice, SathiMood.WARM)
+            } finally {
+                _isThinking.value = false
+            }
+        }
+    }
+
     fun analyzeHomeVideo(context: Context, uri: Uri, question: String) {
         val lang = currentLanguage()
         val voice = currentVoice()
@@ -327,6 +377,31 @@ class SathiViewModel(
                     return@launch
                 }
 
+                // If live Screen Share is active and user asks about what's on screen, analyze live screen frame
+                val lowerText = text.lowercase()
+                if (SathiScreenShareService.isSharing.value &&
+                    (lowerText.contains("স্ক্রিন") || lowerText.contains("screen") ||
+                        lowerText.contains("এটা কী") || lowerText.contains("এখানে কী") ||
+                        lowerText.contains("পড়ে শোনা") || lowerText.contains("পড়ে শোনা"))
+                ) {
+                    val frame = SathiScreenShareService.captureLatestFrame()
+                    if (frame != null) {
+                        val analysis = aiService.analyzeImage(frame, text, lang, isScreenCapture = true).getOrElse {
+                            if (lang == SathiLanguage.BN) "স্ক্রিনটি পড়া যায়নি।" else "Could not read screen."
+                        }
+                        _messages.value = _messages.value + ChatMessage(
+                            id = UUID.randomUUID().toString(),
+                            isUser = false,
+                            text = analysis,
+                            mood = SathiMood.WARM
+                        )
+                        if (speakReply) {
+                            voiceController.speak(analysis, lang, voice, SathiMood.WARM)
+                        }
+                        return@launch
+                    }
+                }
+
                 // Online Companion AI Engine
                 val allowMemory = (profile?.hasPremiumAccess() == true) || globalConfig.value.longTermMemoryForFree
                 val recentHistory = _messages.value.takeLast(7).map { it.isUser to it.text }
@@ -363,7 +438,15 @@ class SathiViewModel(
                         ).getOrElse { turn }
                         handleTurnOutput(groundedResult, sources, isOffline = false, speakReply = speakReply, lang = lang, voice = voice)
                     } else {
-                        handleTurnOutput(turn, emptyList(), isOffline = false, speakReply = speakReply, lang = lang, voice = voice)
+                        val fallbackTurn = turn.copy(
+                            replyText = if (lang == SathiLanguage.BN) {
+                                "দুঃখিত, এই বিষয়ে ইন্টারনেটে সঠিক তথ্য পাওয়া যায়নি। নির্দিষ্ট বিষয় বা শহরের নাম লিখে আবার চেষ্টা করুন।"
+                            } else {
+                                "Sorry, I couldn't find reliable online results for that. Please try with a more specific topic."
+                            },
+                            actionType = PhoneActionType.NONE
+                        )
+                        handleTurnOutput(fallbackTurn, emptyList(), isOffline = false, speakReply = speakReply, lang = lang, voice = voice)
                     }
                 } else {
                     handleTurnOutput(turn, emptyList(), isOffline = false, speakReply = speakReply, lang = lang, voice = voice)

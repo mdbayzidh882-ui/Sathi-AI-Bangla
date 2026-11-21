@@ -35,33 +35,47 @@ class WebSearchService {
                 }
             }
 
-            // 2. Live news / sports / scores -> Google News RSS for Bangladesh + Global + Wikipedia context
+            // 2. Live news / sports / scores -> Google News RSS for Bangladesh + Global
             val results = mutableListOf<WebSource>()
             if (isNewsOrScoreQuery(lower)) {
                 results.addAll(fetchGoogleNewsRss(trimmed, language))
             }
 
-            // 3. Wikipedia (Bengali + English fallback) for facts, people, places, knowledge
-            val wikiLang = if (language == SathiLanguage.BN || trimmed.any { it in '\u0980'..'\u09FF' }) "bn" else "en"
-            if (results.size < 3) {
-                results.addAll(fetchWikipediaSources(trimmed, wikiLang))
-            }
-            if (results.isEmpty() && wikiLang == "bn") {
-                results.addAll(fetchWikipediaSources(trimmed, "en"))
-            }
-
-            // 4. Google News fallback for general current events if Wikipedia had nothing
-            if (results.isEmpty()) {
-                results.addAll(fetchGoogleNewsRss(trimmed, language))
-            }
-
-            // 5. DuckDuckGo Instant Answer fallback
-            if (results.size < 2) {
-                fetchDuckDuckGoSource(trimmed)?.let { results.add(it) }
+            // 3. Extract clean topic before searching Wikipedia / DuckDuckGo
+            val cleanTopic = extractSearchTopic(trimmed)
+            if (cleanTopic.length >= 2) {
+                val wikiLang = if (language == SathiLanguage.BN || cleanTopic.any { it in '\u0980'..'\u09FF' }) "bn" else "en"
+                if (results.size < 3) {
+                    results.addAll(fetchWikipediaSources(cleanTopic, wikiLang))
+                }
+                if (results.isEmpty() && wikiLang == "bn") {
+                    results.addAll(fetchWikipediaSources(cleanTopic, "en"))
+                }
+                if (results.size < 2) {
+                    fetchDuckDuckGoSource(cleanTopic)?.let { results.add(it) }
+                }
             }
 
             results.distinctBy { it.url }.take(4)
         }
+
+    private fun extractSearchTopic(raw: String): String {
+        val stopWords = setOf(
+            "সার্চ", "খুঁজো", "খুঁজে", "দাও", "বলো", "জানাও", "দেখো", "গুগল", "অনলাইন",
+            "সম্পর্কে", "বিষয়ে", "বিষয়ে", "কি", "কী", "কে", "কেন", "কবে", "কোথায়", "কোথায়",
+            "কিভাবে", "কীভাবে", "হলো", "হল", "হয়", "হয়", "একটু", "দয়া", "করে",
+            "search", "google", "find", "tell", "me", "about", "what", "who", "where",
+            "when", "why", "how", "is", "was", "are", "the", "a", "an", "in", "of", "for", "please"
+        )
+        return raw
+            .replace(Regex("[?,!।\"']+"), " ")
+            .trim()
+            .split(Regex("\\s+"))
+            .filter { token -> token.lowercase() !in stopWords }
+            .joinToString(" ")
+            .trim()
+            .take(80)
+    }
 
     private fun isWeatherQuery(lower: String): Boolean =
         lower.contains("weather") || lower.contains("আবহাওয়া") || lower.contains("আবহাওয়া") ||
@@ -264,11 +278,33 @@ class WebSearchService {
         return items
     }
 
-    private fun fetchWikipediaSources(query: String, langCode: String): List<WebSource> {
+    private fun fetchWikipediaSources(topic: String, langCode: String): List<WebSource> {
         return try {
-            val cleaned = query
-                .replace(Regex("[?,!।]+"), " ")
-                .trim()
+            val cleaned = topic.replace(Regex("[?,!।]+"), " ").trim()
+            if (cleaned.length < 2) return emptyList()
+
+            // 1. Direct REST exact title summary first (highest accuracy, zero random hits)
+            val exactSlug = URLEncoder.encode(cleaned.replace(" ", "_"), "UTF-8")
+            val summaryUrl = "https://$langCode.wikipedia.org/api/rest_v1/page/summary/$exactSlug"
+            val summaryReq = Request.Builder().url(summaryUrl).header("User-Agent", "SathiAndroidApp/1.0").build()
+            client.newCall(summaryReq).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val body = resp.body?.string().orEmpty()
+                    val json = JSONObject(body)
+                    val type = json.optString("type")
+                    val title = json.optString("title").trim()
+                    val extract = json.optString("extract").trim()
+                    if (type != "disambiguation" && title.isNotBlank() && extract.length > 25) {
+                        val pageUrl = "https://$langCode.wikipedia.org/wiki/${URLEncoder.encode(title.replace(" ", "_"), "UTF-8")}"
+                        return listOf(WebSource(title = title, snippet = extract.take(320), url = pageUrl))
+                    }
+                }
+            }
+
+            // 2. Search API with strict relevance check (topic tokens must match title or snippet)
+            val topicTokens = cleaned.lowercase()
+                .split(Regex("\\s+"))
+                .filter { it.length >= 2 }
             val encoded = URLEncoder.encode(cleaned, "UTF-8")
             val url =
                 "https://$langCode.wikipedia.org/w/api.php?action=query&list=search&srsearch=$encoded&format=json&srlimit=3&utf8=1"
@@ -289,7 +325,9 @@ class WebSearchService {
                             .replace("&quot;", "\"")
                             .replace("&amp;", "&")
                             .trim()
-                        if (title.isNotEmpty()) {
+                        val combinedLower = "$title $rawSnippet".lowercase()
+                        val isRelevant = topicTokens.any { token -> combinedLower.contains(token) }
+                        if (title.isNotEmpty() && isRelevant) {
                             val pageUrl = "https://$langCode.wikipedia.org/wiki/${URLEncoder.encode(title.replace(" ", "_"), "UTF-8")}"
                             add(WebSource(title = title, snippet = rawSnippet, url = pageUrl))
                         }

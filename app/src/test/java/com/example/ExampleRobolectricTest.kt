@@ -76,6 +76,36 @@ class ExampleRobolectricTest {
         assertEquals(PhoneActionType.NONE, whoTurn.actionType)
         assertTrue(whoTurn.replyText.contains("মোহাম্মদ বাইজিদ হাসান"))
 
+        val timeTurn = ai.generateCompanionReply(
+            userMessage = "এখন কয়টা বাজে",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertEquals(PhoneActionType.NONE, timeTurn.actionType)
+        assertTrue(timeTurn.replyText.contains("মিনিট"))
+        assertFalse(timeTurn.replyText.contains("অভিনেত্রী"))
+
+        val casualTurn = ai.generateCompanionReply(
+            userMessage = "কি করতেছো এখন",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertEquals(PhoneActionType.NONE, casualTurn.actionType)
+
+        val testBmp = android.graphics.Bitmap.createBitmap(120, 90, android.graphics.Bitmap.Config.ARGB_8888)
+        testBmp.eraseColor(android.graphics.Color.rgb(40, 140, 220))
+        val imgAnalysis = ai.analyzeImage(
+            bitmap = testBmp,
+            question = "এই ছবিতে কী আছে?",
+            language = SathiLanguage.BN,
+            isScreenCapture = false
+        ).getOrThrow()
+        assertTrue(imgAnalysis.contains("120×90"))
+
         val mathTurn = ai.generateCompanionReply(
             userMessage = "২৫ + ১৫ কত",
             language = SathiLanguage.BN,

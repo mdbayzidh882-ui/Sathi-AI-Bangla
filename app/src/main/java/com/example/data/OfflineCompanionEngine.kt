@@ -4,9 +4,6 @@ import com.example.model.MemoryCategory
 import com.example.model.PhoneActionType
 import com.example.model.SathiLanguage
 import com.example.model.SathiMood
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 class OfflineCompanionEngine(
     private val packManager: OfflinePackManager? = null
@@ -44,15 +41,20 @@ class OfflineCompanionEngine(
             return turn(reply, SathiMood.HAPPY)
         }
 
-        // 3. Web search politely declined offline
+        // 3. Time / Date / Day (works accurately 100% offline!)
+        if (SathiAiService.isTimeOrDateQuery(lower)) {
+            return turn(SathiAiService.formatCurrentTimeAndDate(language), SathiMood.WARM)
+        }
+
+        // 4. Web search politely declined offline
         if (lower.contains("search") || lower.contains("খবর") || lower.contains("news") ||
             lower.contains("weather") || lower.contains("আবহাওয়া") || lower.contains("আবহাওয়া") ||
             lower.contains("score") || lower.contains("স্কোর") || lower.contains("দাম") || lower.contains("youtube")
         ) {
             val reply = if (language == SathiLanguage.BN) {
-                "আমি এখন অফলাইন মোডে আছি, তাই লাইভ আবহাওয়া, খবর বা ইউটিউব দেখতে ইন্টারনেট সংযোগ প্রয়োজন। তবে গল্প, সাধারণ জ্ঞান, অ্যালার্ম, টাইমার, ফ্ল্যাশলাইট বা কল এখনই কাজ করবে।"
+                "আমি এখন অফলাইন মোডে আছি, তাই লাইভ আবহাওয়া, খবর বা ইউটিউব দেখতে ইন্টারনেট সংযোগ প্রয়োজন। তবে গল্প, সাধারণ জ্ঞান, সময়-তারিখ, অ্যালার্ম, টাইমার, ফ্ল্যাশলাইট বা কল এখনই কাজ করবে।"
             } else {
-                "I'm in Offline Mode, so live weather, news, and YouTube need internet. However, I can tell stories, answer saved offline facts, or run alarms, timers, flashlight, and calls!"
+                "I'm in Offline Mode, so live weather, news, and YouTube need internet. However, I can tell stories, share the time/date, answer saved offline facts, or run alarms, timers, flashlight, and calls!"
             }
             return turn(reply, SathiMood.WARM)
         }
@@ -126,13 +128,6 @@ class OfflineCompanionEngine(
         // 8. Check Real Downloaded Offline Knowledge Pack on disk!
         packManager?.searchOfflineKnowledge(input, language)?.let { packHit ->
             return turn(packHit, SathiMood.SERIOUS)
-        }
-
-        // 9. Time / Date
-        if (lower.contains("time") || lower.contains("সময়") || lower.contains("সময়") || lower.contains("কটা বাজে")) {
-            val nowTime = SimpleDateFormat("hh:mm a, dd MMM", Locale.getDefault()).format(Date())
-            val reply = if (language == SathiLanguage.BN) "এখন সময় $nowTime।" else "The current time is $nowTime."
-            return turn(reply, SathiMood.WARM)
         }
 
         // 10. Sad / Comforting mood

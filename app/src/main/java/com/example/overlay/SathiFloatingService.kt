@@ -327,7 +327,7 @@ class SathiFloatingService : Service() {
             orientation = LinearLayout.HORIZONTAL
         }
         val micBtn = Button(this).apply {
-            text = "🎙️ কথা বলুন"
+            text = "🎙️ বলুন"
             setTextColor(Color.WHITE)
             background = GradientDrawable().apply {
                 setColor(Color.parseColor("#7B4DFF"))
@@ -339,8 +339,20 @@ class SathiFloatingService : Service() {
                 voiceController?.startListening(SathiLanguage.BN)
             }
         }
+        val lookScreenBtn = Button(this).apply {
+            text = "👁️ স্ক্রিন"
+            setTextColor(Color.WHITE)
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#5B34C7"))
+                cornerRadius = dp(14).toFloat()
+            }
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener {
+                inspectCurrentSharedScreen("")
+            }
+        }
         val openAppBtn = Button(this).apply {
-            text = "অ্যাপ খুলুন"
+            text = "অ্যাপ"
             setTextColor(Color.parseColor("#E9DDFF"))
             background = GradientDrawable().apply {
                 setColor(Color.parseColor("#3B2A66"))
@@ -355,7 +367,7 @@ class SathiFloatingService : Service() {
             }
         }
         val closeBtn = Button(this).apply {
-            text = "বন্ধ"
+            text = "✕"
             setTextColor(Color.parseColor("#FFB4C4"))
             background = GradientDrawable().apply {
                 setColor(Color.parseColor("#421E36"))
@@ -365,14 +377,16 @@ class SathiFloatingService : Service() {
         }
 
         actionsRow.addView(micBtn)
-        actionsRow.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(dp(6), 1) })
+        actionsRow.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(dp(5), 1) })
+        actionsRow.addView(lookScreenBtn)
+        actionsRow.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(dp(5), 1) })
         actionsRow.addView(openAppBtn)
-        actionsRow.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(dp(6), 1) })
+        actionsRow.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(dp(5), 1) })
         actionsRow.addView(closeBtn)
         card.addView(actionsRow)
 
         val pParams = WindowManager.LayoutParams(
-            dp(320),
+            dp(336),
             WindowManager.LayoutParams.WRAP_CONTENT,
             overlayLayoutType(),
             WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
@@ -392,7 +406,41 @@ class SathiFloatingService : Service() {
         }
     }
 
+    private fun inspectCurrentSharedScreen(question: String) {
+        if (!SathiScreenShareService.isSharing.value) {
+            val guide = "প্রথমে সাথী অ্যাপের '+' বাটন থেকে 'ফোন স্ক্রিন শেয়ার করুন' চালু করুন, তারপর এখানে '👁️ স্ক্রিন' চাপুন।"
+            replyTextView?.text = guide
+            statusTextView?.text = "স্ক্রিন শেয়ার চালু নেই"
+            voiceController?.speak(guide, SathiLanguage.BN, SathiVoiceProfile.FEMALE, SathiMood.WARM, autoResumeLiveAfter = false)
+            return
+        }
+        statusTextView?.text = "স্ক্রিন দেখছি..."
+        serviceScope.launch {
+            val frame = SathiScreenShareService.captureLatestFrame()
+            if (frame == null) {
+                statusTextView?.text = "ফ্রেম পাওয়া যায়নি"
+                replyTextView?.text = "স্ক্রিন ফ্রেম এখনো তৈরি হয়নি, অনুগ্রহ করে আবার চেষ্টা করুন।"
+                return@launch
+            }
+            val analysis = aiService.analyzeImage(frame, question, SathiLanguage.BN, isScreenCapture = true).getOrElse {
+                "স্ক্রিন বিশ্লেষণ করা যায়নি।"
+            }
+            replyTextView?.text = analysis
+            statusTextView?.text = "স্ক্রিন বিশ্লেষণ সম্পন্ন"
+            voiceController?.speak(analysis, SathiLanguage.BN, SathiVoiceProfile.FEMALE, SathiMood.WARM, autoResumeLiveAfter = false)
+        }
+    }
+
     private fun handleFloatingQuery(query: String) {
+        val lower = query.lowercase()
+        if (SathiScreenShareService.isSharing.value &&
+            (lower.contains("স্ক্রিন") || lower.contains("screen") ||
+                lower.contains("এটা কী") || lower.contains("এখানে কী"))
+        ) {
+            inspectCurrentSharedScreen(query)
+            return
+        }
+
         statusTextView?.text = "সাথী ভাবছে..."
         serviceScope.launch {
             val result = aiService.generateCompanionReply(
@@ -417,7 +465,12 @@ class SathiFloatingService : Service() {
                         webSources = sources,
                         allowLongTermMemory = false
                     ).getOrElse { turn }
-                } else turn
+                } else {
+                    turn.copy(
+                        replyText = "দুঃখিত, এই বিষয়ে ইন্টারনেটে সঠিক তথ্য পাওয়া যায়নি।",
+                        actionType = PhoneActionType.NONE
+                    )
+                }
             } else turn
 
             if (finalTurn.actionType != PhoneActionType.NONE &&

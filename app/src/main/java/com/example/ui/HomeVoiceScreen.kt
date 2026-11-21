@@ -1,13 +1,13 @@
 package com.example.ui
 
 import android.Manifest
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.ImageDecoder
+import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
-import android.provider.MediaStore
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -55,10 +55,13 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.ScreenShare
 import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.StopScreenShare
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.AlertDialog
@@ -104,12 +107,14 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import com.example.core.BitmapUtils
 import com.example.model.ChatMessage
 import com.example.model.PhoneActionType
 import com.example.model.PlanTier
 import com.example.model.SathiLanguage
 import com.example.model.SathiMood
 import com.example.overlay.SathiFloatingService
+import com.example.overlay.SathiScreenShareService
 import com.example.ui.theme.MoodComfortGlow
 import com.example.ui.theme.MoodHappyGlow
 import com.example.ui.theme.MoodSeriousGlow
@@ -132,6 +137,7 @@ fun HomeVoiceScreen(
     val banner by viewModel.bannerState.collectAsStateWithLifecycle()
     val morningGreeting by viewModel.morningGreeting.collectAsStateWithLifecycle()
     val floatingRunning by SathiFloatingService.isRunning.collectAsStateWithLifecycle()
+    val screenSharing by SathiScreenShareService.isSharing.collectAsStateWithLifecycle()
 
     val language = SathiLanguage.fromCode(profile?.preferredLanguage)
     val isOffline = viewModel.isUsingOfflineMode()
@@ -139,6 +145,24 @@ fun HomeVoiceScreen(
     var showMicRationale by remember { mutableStateOf(false) }
     var showMediaSheet by remember { mutableStateOf(false) }
     var showOverlayDialog by remember { mutableStateOf(false) }
+
+    val screenShareLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val data = result.data
+        if (result.resultCode == Activity.RESULT_OK && data != null) {
+            SathiScreenShareService.startService(context, result.resultCode, data)
+            if (Settings.canDrawOverlays(context) && !floatingRunning) {
+                toggleFloatingOverlay(context, currentlyRunning = false) {}
+            }
+            val msg = if (language == SathiLanguage.BN) {
+                "স্ক্রিন শেয়ার চালু হয়েছে! এখন অন্য অ্যাপে গিয়ে বাবলের 'স্ক্রিন দেখো' চাপুন অথবা এখানে 'স্ক্রিন দেখো' চাপুন।"
+            } else {
+                "Screen Share is now active! Switch to any app and tap 'Look at Screen' in the floating bubble or right here."
+            }
+            viewModel.speakMessage(msg, SathiMood.HAPPY)
+        }
+    }
 
     val micPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -161,7 +185,7 @@ fun HomeVoiceScreen(
         if (bmp != null) {
             val q = typedInput.trim()
             typedInput = ""
-            viewModel.analyzeHomePhoto(bmp, q)
+            viewModel.analyzeHomePhoto(BitmapUtils.ensureSoftwareBitmap(bmp), q)
         }
     }
 
@@ -177,20 +201,18 @@ fun HomeVoiceScreen(
         ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
-            val bmp = try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri))
-                } else {
-                    @Suppress("DEPRECATION")
-                    MediaStore.Images.Media.getBitmap(context.contentResolver, uri)
-                }
-            } catch (_: Exception) {
-                null
-            }
+            val bmp = BitmapUtils.decodeUriToSoftwareBitmap(context, uri)
             if (bmp != null) {
                 val q = typedInput.trim()
                 typedInput = ""
                 viewModel.analyzeHomePhoto(bmp, q)
+            } else {
+                val errMsg = if (language == SathiLanguage.BN) {
+                    "দুঃখিত, এই ছবিটি ফোনের গ্যালারি থেকে পড়া যায়নি।"
+                } else {
+                    "Sorry, could not decode that photo from gallery."
+                }
+                viewModel.speakMessage(errMsg, SathiMood.WARM)
             }
         }
     }
@@ -299,6 +321,47 @@ fun HomeVoiceScreen(
                             homeVideoPickerLauncher.launch(
                                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
                             )
+                        }
+                )
+                ListItem(
+                    headlineContent = {
+                        Text(
+                            if (language == SathiLanguage.BN) {
+                                if (screenSharing) "স্ক্রিন শেয়ার বন্ধ করুন" else "ফোন স্ক্রিন শেয়ার করুন (Live)"
+                            } else {
+                                if (screenSharing) "Stop Screen Share" else "Share Phone Screen (Live)"
+                            }
+                        )
+                    },
+                    supportingContent = {
+                        Text(
+                            if (language == SathiLanguage.BN) {
+                                "সাথীকে আপনার ফোনের স্ক্রিন দেখান যেন যেকোনো কিছু পড়ে ও বুঝিয়ে দিতে পারে"
+                            } else {
+                                "Let Sathi see your screen to read text and explain what is shown"
+                            }
+                        )
+                    },
+                    leadingContent = {
+                        Icon(
+                            imageVector = if (screenSharing) Icons.Default.StopScreenShare else Icons.Default.ScreenShare,
+                            contentDescription = null,
+                            tint = if (screenSharing) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.tertiary
+                        )
+                    },
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(14.dp))
+                        .testTag("share_screen_option")
+                        .clickable {
+                            showMediaSheet = false
+                            if (screenSharing) {
+                                SathiScreenShareService.stopService(context)
+                            } else {
+                                val mgr = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager
+                                if (mgr != null) {
+                                    screenShareLauncher.launch(mgr.createScreenCaptureIntent())
+                                }
+                            }
                         }
                 )
                 Spacer(modifier = Modifier.height(16.dp))
@@ -702,6 +765,62 @@ fun HomeVoiceScreen(
         }
 
         Spacer(modifier = Modifier.height(4.dp))
+
+        // Active Screen Share Control Pill
+        AnimatedVisibility(visible = screenSharing) {
+            Surface(
+                color = MaterialTheme.colorScheme.tertiaryContainer,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        Icon(
+                            Icons.Default.ScreenShare,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (language == SathiLanguage.BN) "স্ক্রিন শেয়ার চালু আছে" else "Screen Share Active",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    AssistChip(
+                        onClick = {
+                            val q = typedInput.trim()
+                            typedInput = ""
+                            viewModel.analyzeSharedScreen(q)
+                        },
+                        leadingIcon = {
+                            Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(16.dp))
+                        },
+                        label = { Text(if (language == SathiLanguage.BN) "স্ক্রিন দেখো" else "Inspect") },
+                        modifier = Modifier.testTag("analyze_screen_button")
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    IconButton(
+                        onClick = { SathiScreenShareService.stopService(context) },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Stop Screen Share",
+                            tint = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                    }
+                }
+            }
+        }
 
         // Animated Gemini-Live Style Voice Orb + Stop Live Pill
         SathiVoiceOrbBar(

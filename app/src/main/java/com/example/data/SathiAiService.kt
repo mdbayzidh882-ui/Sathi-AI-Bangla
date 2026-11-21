@@ -5,19 +5,27 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import com.example.core.BitmapUtils
 import com.example.model.MemoryCategory
 import com.example.model.PhoneActionType
 import com.example.model.SathiLanguage
 import com.example.model.SathiMood
 import com.example.model.UserMemory
 import com.example.model.WebSource
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.label.ImageLabeling
+import com.google.mlkit.vision.label.defaults.ImageLabelerOptions
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import java.net.URLEncoder
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.util.Calendar
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
@@ -151,7 +159,12 @@ class SathiAiService {
             return Result.success(simpleTurn(reply, SathiMood.HAPPY))
         }
 
-        // 5. YouTube action
+        // 5. Device Time / Date / Day (ALWAYS local & exact — never send to web search!)
+        if (isTimeOrDateQuery(lower)) {
+            return Result.success(simpleTurn(formatCurrentTimeAndDate(language), SathiMood.WARM))
+        }
+
+        // 6. YouTube action
         if (lower.contains("youtube") || lower.contains("ইউটিউব") || lower.contains("গান চালাও") ||
             (lower.contains("ভিডিও") && lower.contains("চালাও"))
         ) {
@@ -173,7 +186,7 @@ class SathiAiService {
             return Result.success(simpleTurn(reply, SathiMood.HAPPY, PhoneActionType.YOUTUBE, cleaned))
         }
 
-        // 6. Stories, Jokes, Riddles, Poems (creative varied entertainment!)
+        // 7. Stories, Jokes, Riddles, Poems (creative varied entertainment!)
         if (lower.contains("গল্প") || lower.contains("story")) {
             return Result.success(simpleTurn(nextStory(language, storyCursor++), SathiMood.HAPPY))
         }
@@ -189,19 +202,20 @@ class SathiAiService {
             return Result.success(simpleTurn(poem, SathiMood.WARM))
         }
 
-        // 7. Quick Math Calculator
+        // 8. Quick Math Calculator
         tryEvaluateMath(text, language)?.let { mathReply ->
             return Result.success(simpleTurn(mathReply, SathiMood.SERIOUS))
         }
 
-        // 8. Web search intent (weather, news, scores, or genuine factual questions — NO substring bug!)
+        // 9. Genuine Web Search Intent (weather, news, scores, explicit search, or real factual questions)
         val isWeather = lower.contains("weather") || lower.contains("আবহাওয়া") || lower.contains("আবহাওয়া") ||
             lower.contains("তাপমাত্রা") || lower.contains("temperature") || lower.contains("বৃষ্টি")
         val isNewsOrScore = lower.contains("news") || lower.contains("খবর") || lower.contains("সংবাদ") ||
             lower.contains("score") || lower.contains("স্কোর") || lower.contains("ক্রিকেট") ||
-            lower.contains("ফুটবল") || lower.contains("search") || lower.contains("খুঁজ")
-        val isFactualQuestion = Regex("^(what is|who is|where is|when did|tell me about)\\b").containsMatchIn(lower) ||
-            Regex("\\b(কাকে বলে|কোথায়|কোথায়|রাজধানী|ইতিহাস|সম্পর্কে বলো|জানাও)\\b").containsMatchIn(lower)
+            lower.contains("ফুটবল") || lower.contains("search") || lower.contains("খুঁজ") ||
+            lower.contains("সার্চ") || lower.contains("গুগল")
+        val isFactualQuestion = Regex("^(what is|who is|who was|where is|when did|tell me about)\\b").containsMatchIn(lower) ||
+            Regex("(কে ছিলেন|কাকে বলে|রাজধানী|ইতিহাস|সম্পর্কে বলো|সম্পর্কে জানাও)").containsMatchIn(lower)
 
         if (isWeather || isNewsOrScore || isFactualQuestion) {
             return Result.success(
@@ -314,13 +328,16 @@ class SathiAiService {
             }
         }
 
-        // 14. Time / Date
-        if (lower.contains("time") || lower.contains("সময়") || lower.contains("সময়") || lower.contains("কটা বাজে") ||
-            lower.contains("তারিখ") || lower.contains("date")
+        // 14. Casual friendly conversation (no blind Wikipedia searches!)
+        if (lower.contains("কি করছ") || lower.contains("কী করছ") || lower.contains("করতেছ") ||
+            lower.contains("what are you doing") || lower.contains("how are you")
         ) {
-            val nowTime = SimpleDateFormat("hh:mm a, dd MMM yyyy", Locale.getDefault()).format(Date())
-            val reply = if (language == SathiLanguage.BN) "এখন সময় ও তারিখ: $nowTime।" else "The current time and date is $nowTime."
-            return Result.success(simpleTurn(reply, SathiMood.WARM))
+            val reply = if (language == SathiLanguage.BN) {
+                "আমি আপনার সাথেই আছি $userName, মন দিয়ে আপনার কথা শুনছি! সময় জানতে, ছবি বা স্ক্রিন দেখাতে, অথবা যেকোনো খবর জানতে আমাকে বলুন।"
+            } else {
+                "I'm right here listening to you, $userName! Feel free to ask the time, weather, news, or share a photo or screen."
+            }
+            return Result.success(simpleTurn(reply, SathiMood.HAPPY))
         }
 
         // 15. Comforting / Emotional Empathy
@@ -372,23 +389,15 @@ class SathiAiService {
             return Result.success(simpleTurn(reply, SathiMood.PLAYFUL))
         }
 
-        // 17. Try live Wikipedia / DuckDuckGo summary if the user typed a meaningful phrase/question
-        if (text.length >= 4 && !lower.contains("হ্যালো") && !lower.contains("সাথী")) {
-            val wikiHit = fetchDirectWikipediaSummary(text, if (language == SathiLanguage.BN) "bn" else "en")
-            if (wikiHit != null) {
-                return Result.success(simpleTurn(wikiHit, SathiMood.SERIOUS))
-            }
-        }
-
-        // 18. Natural, non-repetitive conversational replies
+        // 17. Natural, non-repetitive conversational replies (never pulls irrelevant Wikipedia noise!)
         val naturalBn = listOf(
-            "আমি আপনার কথা মন দিয়ে শুনছি, $userName। এ বিষয়ে আপনি কী ভাবছেন বা আমি কীভাবে সাহায্য করতে পারি বলুন?",
-            "খুব ভালো কথা বলেছেন, $userName! চাইলে আমাকে যেকোনো জেলার আবহাওয়া, বাংলাদেশের খবর, একটি গল্প শোনাতে, বা '+' বাটন দিয়ে ছবি/ভিডিও দেখাতে পারেন।",
-            "জি $userName, আমি সাথেই আছি। পরের কোন কাজটি করব বা কী বিষয়ে কথা বলব বলুন!"
+            "আমি আপনার কথা মন দিয়ে শুনছি, $userName। এ বিষয়ে আপনি কী জানতে চান বা করতে চান বলুন?",
+            "জি $userName! আপনি চাইলে সময়-তারিখ, জেলার আবহাওয়া, খবর বা '+' বাটন দিয়ে ছবি, ভিডিও ও স্ক্রিন শেয়ার দেখাতে পারেন।",
+            "আমি সাথেই আছি, $userName। কোন বিষয়টি নিয়ে কথা বলব বা কোন তথ্যটি খুঁজে দেব বলুন!"
         )
         val naturalEn = listOf(
-            "I hear you, $userName. Tell me more, or tap + to share a photo or video for me to analyze!",
-            "Got it, $userName! You can ask me about weather in any district, Bangladesh news, a story, or device actions anytime.",
+            "I hear you, $userName. Tell me more, or tap + to share a photo, video, or your phone screen!",
+            "Got it, $userName! You can ask me the time, weather in any district, Bangladesh news, or a story anytime.",
             "I'm right here with you, $userName. What would you like to explore next?"
         )
         val idx = chatCursor++ % naturalBn.size
@@ -399,35 +408,129 @@ class SathiAiService {
     suspend fun analyzeImage(
         bitmap: Bitmap,
         question: String,
-        language: SathiLanguage
+        language: SathiLanguage,
+        isScreenCapture: Boolean = false
     ): Result<String> = withContext(Dispatchers.Default) {
         try {
-            val stats = inspectBitmapStats(bitmap)
-            val orientationBn = if (bitmap.width >= bitmap.height) "আড়াআড়ি (Landscape)" else "লম্বালম্বি (Portrait)"
-            val orientationEn = if (bitmap.width >= bitmap.height) "landscape" else "portrait"
+            val safeBitmap = BitmapUtils.ensureSoftwareBitmap(bitmap)
+            val stats = inspectBitmapStats(safeBitmap)
+            val labels = detectImageLabels(safeBitmap)
+            val recognizedText = detectTextFromBitmap(safeBitmap)
+
+            val orientationBn = if (safeBitmap.width >= safeBitmap.height) "আড়াআড়ি (Landscape)" else "লম্বালম্বি (Portrait)"
+            val orientationEn = if (safeBitmap.width >= safeBitmap.height) "landscape" else "portrait"
+            val translatedLabelsBn = labels.mapNotNull { mapLabelToBengali(it) }.distinct().take(4)
 
             val response = if (language == SathiLanguage.BN) {
                 buildString {
-                    append("আমি আপনার ছবিটি বিশ্লেষণ করেছি। ")
-                    append("এটি ${bitmap.width}×${bitmap.height} পিক্সেলের একটি $orientationBn ছবি। ")
-                    append("ছবিটিতে ${stats.lightingBn} এবং ${stats.toneBn} দেখা যাচ্ছে (কনট্রাস্ট: ${stats.contrastLabelBn})। ")
+                    if (isScreenCapture) {
+                        append("আমি আপনার ফোনের শেয়ার করা স্ক্রিনটি দেখলাম (${safeBitmap.width}×${safeBitmap.height}):\n")
+                    } else {
+                        append("আমি আপনার ছবিটি বিশ্লেষণ করেছি (${safeBitmap.width}×${safeBitmap.height}, $orientationBn):\n")
+                    }
+                    if (translatedLabelsBn.isNotEmpty()) {
+                        append("• দৃশ্যে যা বোঝা যাচ্ছে: ${translatedLabelsBn.joinToString(", ")}।\n")
+                    }
+                    append("• আলো ও রঙ: ${stats.lightingBn}, ${stats.toneBn} (কনট্রাস্ট: ${stats.contrastLabelBn})।\n")
+                    if (recognizedText.isNotBlank()) {
+                        append("• লেখা পাওয়া গেছে:\n\"${recognizedText.take(260)}\"")
+                    } else if (translatedLabelsBn.isEmpty()) {
+                        append("• ছবির উজ্জ্বলতা ও রঙের গঠন পরিষ্কারভাবে পড়া হয়েছে।")
+                    }
                     if (question.isNotBlank()) {
-                        append("\nআপনার প্রশ্ন (\"$question\") অনুসারে ছবির দৃশ্য ও স্পষ্টতা পরিষ্কারভাবে বোঝা যাচ্ছে।")
+                        append("\n• আপনার প্রশ্ন (\"$question\") অনুযায়ী উপরের তথ্যগুলো স্ক্রিন/ছবি থেকে তুলে ধরা হয়েছে।")
                     }
                 }
             } else {
                 buildString {
-                    append("I inspected your photo (${bitmap.width}×${bitmap.height}, $orientationEn). ")
-                    append("It shows ${stats.lightingEn} with ${stats.toneEn} (${stats.contrastLabelEn} contrast). ")
+                    if (isScreenCapture) {
+                        append("I looked at your shared screen (${safeBitmap.width}×${safeBitmap.height}):\n")
+                    } else {
+                        append("I analyzed your photo (${safeBitmap.width}×${safeBitmap.height}, $orientationEn):\n")
+                    }
+                    if (labels.isNotEmpty()) {
+                        append("• Detected subjects: ${labels.take(4).joinToString(", ")}.\n")
+                    }
+                    append("• Visual tone: ${stats.lightingEn} with ${stats.toneEn} (${stats.contrastLabelEn} contrast).\n")
+                    if (recognizedText.isNotBlank()) {
+                        append("• Readable text:\n\"${recognizedText.take(260)}\"")
+                    }
                     if (question.isNotBlank()) {
-                        append("Regarding \"$question\", the visual clarity and lighting look solid.")
+                        append("\n• Regarding \"$question\", the details above reflect what is currently visible.")
                     }
                 }
             }
-            Result.success(response)
+            Result.success(response.trim())
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    private suspend fun detectImageLabels(bitmap: Bitmap): List<String> =
+        withTimeoutOrNull(2500L) {
+            try {
+                suspendCancellableCoroutine { cont ->
+                    val inputImage = InputImage.fromBitmap(bitmap, 0)
+                    val labeler = ImageLabeling.getClient(
+                        ImageLabelerOptions.Builder()
+                            .setConfidenceThreshold(0.55f)
+                            .build()
+                    )
+                    labeler.process(inputImage)
+                        .addOnSuccessListener { results ->
+                            labeler.close()
+                            if (cont.isActive) {
+                                cont.resume(results.sortedByDescending { it.confidence }.map { it.text }.take(5))
+                            }
+                        }
+                        .addOnFailureListener {
+                            labeler.close()
+                            if (cont.isActive) cont.resume(emptyList())
+                        }
+                }
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        } ?: emptyList()
+
+    private suspend fun detectTextFromBitmap(bitmap: Bitmap): String =
+        withTimeoutOrNull(2500L) {
+            try {
+                suspendCancellableCoroutine { cont ->
+                    val inputImage = InputImage.fromBitmap(bitmap, 0)
+                    val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+                    recognizer.process(inputImage)
+                        .addOnSuccessListener { visionText ->
+                            recognizer.close()
+                            val clean = visionText.text
+                                .lines()
+                                .map { it.trim() }
+                                .filter { it.isNotEmpty() }
+                                .joinToString(" • ")
+                            if (cont.isActive) cont.resume(clean)
+                        }
+                        .addOnFailureListener {
+                            recognizer.close()
+                            if (cont.isActive) cont.resume("")
+                        }
+                }
+            } catch (_: Throwable) {
+                ""
+            }
+        } ?: ""
+
+    private fun mapLabelToBengali(label: String): String? = when (label.lowercase()) {
+        "person", "face", "human", "smile", "man", "woman", "boy", "girl", "selfie" -> "মানুষের ছবি ($label)"
+        "sky", "cloud", "nature", "landscape", "mountain", "water", "river", "sea" -> "প্রকৃতি ও আকাশ ($label)"
+        "plant", "tree", "flower", "grass", "forest" -> "গাছপালা ও ফুল ($label)"
+        "food", "fruit", "meal", "dish", "drink", "coffee", "cake" -> "খাবার বা পানীয় ($label)"
+        "phone", "mobile phone", "computer", "laptop", "screen", "electronics", "gadget", "monitor" -> "মোবাইল বা স্ক্রিন ($label)"
+        "text", "document", "paper", "book", "newspaper", "page", "screenshot" -> "ডকুমেন্ট বা লেখা ($label)"
+        "car", "vehicle", "bus", "motorcycle", "bicycle", "road" -> "যানবাহন বা রাস্তা ($label)"
+        "cat", "dog", "bird", "animal", "pet" -> "প্রাণী বা পাখি ($label)"
+        "building", "house", "room", "furniture", "chair", "table" -> "বাড়ি বা ঘরের দৃশ্য ($label)"
+        "clothing", "shirt", "glasses", "shoe", "watch" -> "পোশাক বা জিনিসপত্র ($label)"
+        else -> label
     }
 
     suspend fun analyzeVideo(
@@ -454,6 +557,7 @@ class SathiAiService {
             val sampledFrames = samplePercents.mapNotNull { pct ->
                 val us = (durationMs * 1000L * pct).toLong().coerceAtLeast(0L)
                 retriever.getFrameAtTime(us, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    ?.let { BitmapUtils.ensureSoftwareBitmap(it) }
             }
 
             val thumbnail = sampledFrames.firstOrNull()?.let { frame ->
@@ -593,35 +697,6 @@ class SathiAiService {
 
         return BitmapStats(avgBright, lightingBn, lightingEn, toneBn, toneEn, contrastBn, contrastEn)
     }
-
-    private suspend fun fetchDirectWikipediaSummary(query: String, langCode: String): String? =
-        withContext(Dispatchers.IO) {
-            try {
-                val cleaned = query.replace(Regex("[?,!।]+"), " ").trim()
-                val encoded = URLEncoder.encode(cleaned, "UTF-8")
-                val searchUrl =
-                    "https://$langCode.wikipedia.org/w/api.php?action=query&list=search&srsearch=$encoded&format=json&srlimit=1&utf8=1"
-                val searchReq = Request.Builder().url(searchUrl).header("User-Agent", "SathiAndroidApp/1.0").build()
-                val title = httpClient.newCall(searchReq).execute().use { resp ->
-                    if (!resp.isSuccessful) return@withContext null
-                    val body = resp.body?.string() ?: return@withContext null
-                    val first = JSONObject(body).optJSONObject("query")?.optJSONArray("search")?.optJSONObject(0)
-                    first?.optString("title")?.trim()
-                } ?: return@withContext null
-
-                if (title.isBlank()) return@withContext null
-                val summaryUrl = "https://$langCode.wikipedia.org/api/rest_v1/page/summary/${URLEncoder.encode(title.replace(" ", "_"), "UTF-8")}"
-                val summaryReq = Request.Builder().url(summaryUrl).header("User-Agent", "SathiAndroidApp/1.0").build()
-                httpClient.newCall(summaryReq).execute().use { resp ->
-                    if (!resp.isSuccessful) return@withContext null
-                    val body = resp.body?.string() ?: return@withContext null
-                    val extract = JSONObject(body).optString("extract").trim()
-                    extract.takeIf { it.length > 20 }?.take(360)
-                }
-            } catch (_: Exception) {
-                null
-            }
-        }
 
     suspend fun runStudioTool(
         instruction: String,
@@ -784,6 +859,64 @@ class SathiAiService {
             }
             val formatted = if (result % 1.0 == 0.0) result.toLong().toString() else String.format(Locale.US, "%.2f", result)
             return if (language == SathiLanguage.BN) "উত্তর হবে: $formatted।" else "The answer is $formatted."
+        }
+
+        fun isTimeOrDateQuery(lower: String): Boolean {
+            return lower.contains("time") || lower.contains("সময়") || lower.contains("সময়") ||
+                lower.contains("কয়টা") || lower.contains("কয়টা") || lower.contains("কটা বাজে") ||
+                lower.contains("বাজে") || lower.contains("তারিখ") || lower.contains("date") ||
+                lower.contains("কী বার") || lower.contains("কি বার") || lower.contains("কোন বার") ||
+                lower.contains("what day")
+        }
+
+        fun formatCurrentTimeAndDate(language: SathiLanguage): String {
+            val cal = Calendar.getInstance()
+            val hour24 = cal.get(Calendar.HOUR_OF_DAY)
+            val minute = cal.get(Calendar.MINUTE)
+            val hour12 = when {
+                hour24 == 0 -> 12
+                hour24 > 12 -> hour24 - 12
+                else -> hour24
+            }
+            if (language == SathiLanguage.EN) {
+                val amPm = if (hour24 < 12) "AM" else "PM"
+                val days = listOf("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+                val months = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+                val dayName = days[(cal.get(Calendar.DAY_OF_WEEK) - 1).coerceIn(0, 6)]
+                val monthName = months[cal.get(Calendar.MONTH).coerceIn(0, 11)]
+                val minStr = minute.toString().padStart(2, '0')
+                return "Right now it is $hour12:$minStr $amPm on $dayName, ${cal.get(Calendar.DAY_OF_MONTH)} $monthName ${cal.get(Calendar.YEAR)}."
+            }
+
+            val period = when (hour24) {
+                in 4..5 -> "ভোর"
+                in 6..11 -> "সকাল"
+                in 12..14 -> "দুপুর"
+                in 15..17 -> "বিকাল"
+                in 18..19 -> "সন্ধ্যা"
+                else -> "রাত"
+            }
+            val daysBn = listOf("রবিবার", "সোমবার", "মঙ্গলবার", "বুধবার", "বৃহস্পতিবার", "শুক্রবার", "শনিবার")
+            val monthsBn = listOf(
+                "জানুয়ারি", "ফেব্রুয়ারি", "মার্চ", "এপ্রিল", "মে", "জুন",
+                "জুলাই", "আগস্ট", "সেপ্টেম্বর", "অক্টোবর", "নভেম্বর", "ডিসেম্বর"
+            )
+            val dayNameBn = daysBn[(cal.get(Calendar.DAY_OF_WEEK) - 1).coerceIn(0, 6)]
+            val monthNameBn = monthsBn[cal.get(Calendar.MONTH).coerceIn(0, 11)]
+            val hBn = toBengaliDigits(hour12.toString())
+            val mBn = toBengaliDigits(minute.toString().padStart(2, '0'))
+            val dBn = toBengaliDigits(cal.get(Calendar.DAY_OF_MONTH).toString())
+            val yBn = toBengaliDigits(cal.get(Calendar.YEAR).toString())
+            return "এখন $period $hBn টা $mBn মিনিট। আজ $dayNameBn, $dBn $monthNameBn $yBn।"
+        }
+
+        private fun toBengaliDigits(input: String): String {
+            val bnDigits = charArrayOf('০', '১', '২', '৩', '৪', '৫', '৬', '৭', '৮', '৯')
+            return buildString(input.length) {
+                input.forEach { ch ->
+                    if (ch in '0'..'9') append(bnDigits[ch - '0']) else append(ch)
+                }
+            }
         }
     }
 }

@@ -3,9 +3,7 @@ package com.example.ui
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.graphics.ImageDecoder
-import android.os.Build
-import android.provider.MediaStore
+import com.example.core.BitmapUtils
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -116,8 +114,9 @@ fun StudioToolsScreen(
         ActivityResultContracts.TakePicturePreview()
     ) { bmp ->
         if (bmp != null) {
-            capturedBitmap = bmp
-            viewModel.analyzeCameraBitmap(bmp, inputText)
+            val safe = BitmapUtils.ensureSoftwareBitmap(bmp)
+            capturedBitmap = safe
+            viewModel.analyzeCameraBitmap(safe, inputText)
         }
     }
 
@@ -133,16 +132,7 @@ fun StudioToolsScreen(
         ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
-            val bmp = try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri))
-                } else {
-                    @Suppress("DEPRECATION")
-                    MediaStore.Images.Media.getBitmap(context.contentResolver, uri)
-                }
-            } catch (_: Exception) {
-                null
-            }
+            val bmp = BitmapUtils.decodeUriToSoftwareBitmap(context, uri)
             if (bmp != null) {
                 capturedBitmap = bmp
                 viewModel.analyzeCameraBitmap(bmp, inputText)
