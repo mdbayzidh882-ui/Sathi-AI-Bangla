@@ -11,6 +11,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <uses-feature
@@ -38,6 +39,20 @@
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="https" />
         </intent>
+        <package android:name="com.google.android.youtube" />
+        <package android:name="com.facebook.katana" />
+        <package android:name="com.facebook.lite" />
+        <package android:name="com.instagram.android" />
+        <package android:name="com.zhiliaoapp.musically" />
+        <package android:name="com.ss.android.ugc.trill" />
+        <package android:name="com.facebook.orca" />
+        <package android:name="com.facebook.mlite" />
+        <package android:name="com.whatsapp" />
+        <package android:name="com.whatsapp.w4b" />
+        <package android:name="com.android.chrome" />
+        <package android:name="com.google.android.apps.maps" />
+        <package android:name="com.google.android.gm" />
+        <package android:name="com.android.vending" />
     </queries>
 
     <application
@@ -51,9 +66,15 @@
         android:theme="@style/Theme.Sathi"
         android:usesCleartextTraffic="false"
         tools:targetApi="31">
+
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="@string/admob_app_id" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:label="@string/app_name"
             android:theme="@style/Theme.Sathi"
             android:windowSoftInputMode="adjustResize">
@@ -77,6 +98,24 @@
             android:name=".overlay.SathiScreenShareService"
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
+
+        <service
+            android:name=".overlay.SathiWakeWordService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <service
+            android:name=".overlay.SathiScreenReaderService"
+            android:exported="true"
+            android:label="Sathi Screen Reader"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/sathi_accessibility_config" />
+        </service>
     </application>
 
 </manifest>

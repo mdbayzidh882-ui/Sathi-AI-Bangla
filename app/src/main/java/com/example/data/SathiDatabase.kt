@@ -61,6 +61,8 @@ data class AppConfigEntity(
     val dayPlanningForFree: Boolean,
     val announcementText: String,
     val announcementActive: Boolean,
+    val bannerAdEnabled: Boolean = true,
+    val bannerAdUnitId: String = "ca-app-pub-3940256099942544/6300978111",
     val updatedBy: String,
     val updatedAt: Long
 )
@@ -239,6 +241,12 @@ interface SathiDao {
     @Query("DELETE FROM chat_messages WHERE sessionId = :sessionId")
     suspend fun deleteMessagesForSession(sessionId: String)
 
+    @Query("SELECT * FROM chat_messages ORDER BY timestampMs DESC LIMIT 30")
+    fun observeRecentMessagesForAdmin(): Flow<List<ChatMessageEntity>>
+
+    @Query("SELECT * FROM chat_sessions ORDER BY updatedAt DESC LIMIT 30")
+    fun observeAllChatSessionsForAdmin(): Flow<List<ChatSessionEntity>>
+
     @Query("DELETE FROM chat_messages WHERE userId = :uid")
     suspend fun deleteAllChatMessagesForUser(uid: String)
 }
@@ -253,7 +261,7 @@ interface SathiDao {
         ChatSessionEntity::class,
         ChatMessageEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class SathiDatabase : RoomDatabase() {
@@ -298,6 +306,17 @@ abstract class SathiDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `app_config` ADD COLUMN `bannerAdEnabled` INTEGER NOT NULL DEFAULT 1"
+                )
+                db.execSQL(
+                    "ALTER TABLE `app_config` ADD COLUMN `bannerAdUnitId` TEXT NOT NULL DEFAULT 'ca-app-pub-3940256099942544/6300978111'"
+                )
+            }
+        }
+
         fun getInstance(context: Context): SathiDatabase {
             return instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
@@ -305,7 +324,7 @@ abstract class SathiDatabase : RoomDatabase() {
                     SathiDatabase::class.java,
                     "sathi_local_db"
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .build()
                     .also { instance = it }
             }

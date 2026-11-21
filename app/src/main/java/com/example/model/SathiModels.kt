@@ -35,6 +35,26 @@ enum class SathiMood(val code: String, val labelBn: String, val labelEn: String)
     }
 }
 
+enum class UserEmotion(
+    val code: String,
+    val emoji: String,
+    val labelBn: String,
+    val labelEn: String,
+    val sathiMood: SathiMood
+) {
+    HAPPY("happy", "😊", "খুশি", "Happy", SathiMood.HAPPY),
+    SAD("sad", "😔", "মন খারাপ", "Sad", SathiMood.COMFORTING),
+    ANGRY("angry", "😡", "রাগ", "Angry", SathiMood.COMFORTING),
+    ANXIOUS("anxious", "😰", "টেনশন", "Stressed", SathiMood.COMFORTING),
+    TIRED("tired", "😴", "ক্লান্ত", "Tired", SathiMood.WARM),
+    LOVING("loving", "❤️", "আবেগী", "Loving", SathiMood.PLAYFUL);
+
+    companion object {
+        fun fromCode(raw: String?): UserEmotion? =
+            entries.firstOrNull { it.code == raw }
+    }
+}
+
 enum class PlanTier(val code: String, val labelBn: String, val labelEn: String) {
     FREE("free", "ফ্রি প্ল্যান", "Free Plan"),
     PREMIUM("premium", "প্রিমিয়াম প্ল্যান", "Premium Plan"),
@@ -71,7 +91,8 @@ enum class PhoneActionType {
     VOLUME_DOWN,
     OPEN_APP,
     CALL_CONFIRM,
-    SMS_CONFIRM
+    SMS_CONFIRM,
+    SOCIAL_MESSAGE_CONFIRM
 }
 
 enum class MemoryCategory(val code: String, val labelBn: String, val labelEn: String) {
@@ -95,7 +116,8 @@ data class WebSource(
 data class PendingConfirmation(
     val type: PhoneActionType,
     val target: String,
-    val messageBody: String = ""
+    val messageBody: String = "",
+    val extraParam: String = ""
 )
 
 data class ChatSession(
@@ -176,6 +198,8 @@ data class AppConfig(
     val dayPlanningForFree: Boolean = false,
     val announcementText: String = "",
     val announcementActive: Boolean = false,
+    val bannerAdEnabled: Boolean = true,
+    val bannerAdUnitId: String = "ca-app-pub-3940256099942544/6300978111",
     val updatedBy: String = "",
     val updatedAt: Long = System.currentTimeMillis()
 )

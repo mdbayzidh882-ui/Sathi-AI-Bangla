@@ -1,8 +1,12 @@
 package com.example.ui
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -27,6 +31,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Policy
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Verified
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.AlertDialog
@@ -55,6 +60,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.core.OfflinePackState
 import com.example.core.OfflinePackTier
@@ -62,6 +68,8 @@ import com.example.model.PlanTier
 import com.example.model.SathiLanguage
 import com.example.model.SathiVoiceProfile
 import com.example.overlay.SathiFloatingService
+import com.example.overlay.SathiScreenReaderService
+import com.example.overlay.SathiWakeWordService
 
 @Composable
 fun SettingsAndPlanScreen(
@@ -75,6 +83,8 @@ fun SettingsAndPlanScreen(
     val isOwnerAdmin by viewModel.isOwnerAdmin.collectAsStateWithLifecycle()
     val downloadStatus by viewModel.offlineDownloadStatus.collectAsStateWithLifecycle()
     val floatingRunning by SathiFloatingService.isRunning.collectAsStateWithLifecycle()
+    val wakeRunning by SathiWakeWordService.isRunning.collectAsStateWithLifecycle()
+    val screenReaderActive by SathiScreenReaderService.isConnected.collectAsStateWithLifecycle()
 
     val language = SathiLanguage.fromCode(profile?.preferredLanguage)
     val voice = SathiVoiceProfile.fromCode(profile?.preferredVoice)
@@ -88,6 +98,53 @@ fun SettingsAndPlanScreen(
     var codeInput by remember { mutableStateOf("") }
     var showPrivacyDialog by remember { mutableStateOf(false) }
     var showOverlayDialog by remember { mutableStateOf(false) }
+    var showAccessibilityDialog by remember { mutableStateOf(false) }
+
+    val wakeMicLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            viewModel.setWakeWordEnabled(true)
+            SathiWakeWordService.startService(context)
+        }
+    }
+
+    if (showAccessibilityDialog) {
+        AlertDialog(
+            onDismissRequest = { showAccessibilityDialog = false },
+            icon = { Icon(Icons.Default.Visibility, contentDescription = null) },
+            title = {
+                Text(if (language == SathiLanguage.BN) "স্ক্রিন ডাটা রিডার (Accessibility)" else "Screen Data Reader")
+            },
+            text = {
+                Text(
+                    if (language == SathiLanguage.BN) {
+                        "স্ক্রিন শেয়ার চলাকালে চলমান অ্যাপ ও স্ক্রিনের লেখা সম্পূর্ণভাবে বুঝে উত্তর দিতে সাথী আপনার অনুমতিতে Accessibility সেবা ব্যবহার করে। কোনো পাসওয়ার্ড পড়া বা সংরক্ষণ করা হয় না।"
+                    } else {
+                        "When Screen Share is active, Sathi uses Android Accessibility only to read active app names and visible on-screen text with your consent. Passwords are excluded."
+                    }
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    showAccessibilityDialog = false
+                    try {
+                        context.startActivity(
+                            Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                    } catch (_: Exception) {
+                    }
+                }) {
+                    Text(if (language == SathiLanguage.BN) "Accessibility খুলুন" else "Open Accessibility")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAccessibilityDialog = false }) {
+                    Text(if (language == SathiLanguage.BN) "বাতিল" else "Cancel")
+                }
+            }
+        )
+    }
 
     if (showOverlayDialog) {
         AlertDialog(
@@ -297,6 +354,95 @@ fun SettingsAndPlanScreen(
                                 if (floatingRunning) "ভাসমান বাবল বন্ধ করুন" else "ভাসমান বাবল চালু করুন"
                             } else {
                                 if (floatingRunning) "Turn Off Floating Orb" else "Enable Floating Orb"
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        // 2a. Offline/Online Triple-Sathi Wake Word & Full Screen Data Reader
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                shape = MaterialTheme.shapes.large
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.RecordVoiceOver, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (language == SathiLanguage.BN) {
+                                "ওয়েক-ওয়ার্ড ও সম্পূর্ণ স্ক্রিন ডাটা"
+                            } else {
+                                "Wake Word & Screen Reader"
+                            },
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (language == SathiLanguage.BN) {
+                                    "\"সাথী সাথী সাথী\" ওয়েক-ওয়ার্ড (অফলাইন/অনলাইন)"
+                                } else {
+                                    "\"Sathi Sathi Sathi\" Wake Word (Offline & Online)"
+                                },
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = if (language == SathiLanguage.BN) {
+                                    "তিনবার সাথী বললেই ফোনে অ্যাপ সামনে এসে কথা শোনা শুরু করবে"
+                                } else {
+                                    "Say Sathi three times to wake the app and start listening"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = wakeRunning,
+                            onCheckedChange = { enable ->
+                                if (enable) {
+                                    val granted = ContextCompat.checkSelfPermission(
+                                        context,
+                                        Manifest.permission.RECORD_AUDIO
+                                    ) == PackageManager.PERMISSION_GRANTED
+                                    if (granted) {
+                                        viewModel.setWakeWordEnabled(true)
+                                        SathiWakeWordService.startService(context)
+                                    } else {
+                                        wakeMicLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                    }
+                                } else {
+                                    viewModel.setWakeWordEnabled(false)
+                                    SathiWakeWordService.stopService(context)
+                                }
+                            },
+                            modifier = Modifier.testTag("wake_word_switch")
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = { showAccessibilityDialog = true },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            if (language == SathiLanguage.BN) {
+                                if (screenReaderActive) "স্ক্রিন ডাটা রিডার: চালু আছে ✓" else "স্ক্রিন ডাটা রিডার চালু করুন (Accessibility)"
+                            } else {
+                                if (screenReaderActive) "Screen Data Reader: Active ✓" else "Enable Screen Data Reader"
                             }
                         )
                     }

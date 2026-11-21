@@ -18,6 +18,15 @@ class OfflineCompanionEngine(
     ): SathiTurnResult {
         val lower = input.lowercase().trim()
 
+        if (lower.startsWith("থামো") || lower == "থাম" || lower.startsWith("stop")) {
+            val reply = if (language == SathiLanguage.BN) {
+                "জি, আমি থেমে গেলাম $userName! বলুন এখন কী শুনতে বা করতে চান?"
+            } else {
+                "Okay, I stopped! What would you like me to do next?"
+            }
+            return turn(reply, SathiMood.WARM)
+        }
+
         // 1. Creator rule
         if (lower.contains("বানিয়ে") || lower.contains("বানাইছে") || lower.contains("তৈরি") ||
             lower.contains("who made") || lower.contains("created you") || lower.contains("creator")
@@ -114,9 +123,31 @@ class OfflineCompanionEngine(
             return turn(reply, SathiMood.WARM, PhoneActionType.CALL_CONFIRM, digits)
         }
 
+        // 5b. Open social or phone apps offline
+        val offlineAppTarget = when {
+            lower.contains("whatsapp") || lower.contains("হোয়াটস") || lower.contains("হোয়াটস") -> "whatsapp"
+            lower.contains("messenger") || lower.contains("মেসেঞ্জার") -> "messenger"
+            lower.contains("facebook") || lower.contains("ফেসবুক") -> "facebook"
+            lower.contains("instagram") || lower.contains("ইনস্টাগ্রাম") -> "instagram"
+            lower.contains("tiktok") || lower.contains("টিকটক") -> "tiktok"
+            lower.contains("youtube") || lower.contains("ইউটিউব") -> "youtube"
+            lower.contains("setting") || lower.contains("সেটিং") -> "settings"
+            else -> null
+        }
+        if (offlineAppTarget != null &&
+            (lower.contains("খোলো") || lower.contains("ঢোকো") || lower.contains("চালাও") || lower.contains("open"))
+        ) {
+            val reply = if (language == SathiLanguage.BN) {
+                "জি, ফোনে $offlineAppTarget অ্যাপটি খুলে দিচ্ছি।"
+            } else {
+                "Opening $offlineAppTarget for you."
+            }
+            return turn(reply, SathiMood.WARM, PhoneActionType.OPEN_APP, offlineAppTarget)
+        }
+
         // 6. Stories offline!
-        if (lower.contains("গল্প") || lower.contains("story")) {
-            val story = SathiAiService.nextStory(language, storyCursor++)
+        if (lower.contains("গল্প") || lower.contains("কাহিনী") || lower.contains("story")) {
+            val story = SathiAiService.nextStory(language, storyCursor++, input)
             return turn(story, SathiMood.HAPPY)
         }
 

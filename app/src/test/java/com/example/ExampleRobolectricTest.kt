@@ -15,7 +15,9 @@ import com.example.model.CodeType
 import com.example.model.PhoneActionType
 import com.example.model.PlanTier
 import com.example.model.SathiLanguage
+import com.example.model.UserEmotion
 import com.example.model.UserProfile
+import com.example.overlay.SathiWakeWordService
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -29,21 +31,24 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [36], qualifiers = "w411dp-h915dp-xxhdpi")
 class ExampleRobolectricTest {
 
     @get:Rule
     val composeTestRule = createAndroidComposeRule<MainActivity>()
 
     @Test
-    fun `app opens directly on home screen with Sathi title, drawer, new chat, mic, and media plus button`() {
+    fun `app opens directly on home screen with Sathi title, drawer, new chat, mic, auto-voice toggle, emotion bar, banner ad, and media plus button`() {
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithText("সাথী • Sathi").assertIsDisplayed()
         composeTestRule.onNodeWithTag("drawer_menu_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("new_chat_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("center_ai_logo").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("emotion_chip_sad").assertIsDisplayed()
         composeTestRule.onNodeWithTag("mic_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("auto_voice_toggle_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("attach_media_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("bottom_banner_ad").assertIsDisplayed()
     }
 
     @Test
@@ -249,5 +254,84 @@ class ExampleRobolectricTest {
         } finally {
             db.close()
         }
+    }
+
+    @Test
+    fun `wake word, thamo barge-in, social apps, emotions, and genre stories work correctly`() = runBlocking {
+        assertTrue(SathiWakeWordService.matchesTripleSathi("সাথী সাথী সাথী"))
+        assertTrue(SathiWakeWordService.matchesTripleSathi("Sathi Sathi Sathi"))
+        assertFalse(SathiWakeWordService.matchesTripleSathi("সাথী কেমন আছো"))
+
+        val ai = SathiAiService()
+
+        // Thamo barge-in only
+        val stopOnly = ai.generateCompanionReply(
+            userMessage = "থামো থামো",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertTrue(stopOnly.replyText.contains("থেমে"))
+
+        // Thamo + follow-up command
+        val stopAndAsk = ai.generateCompanionReply(
+            userMessage = "থামো থামো তোমার নাম কী?",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertTrue(stopAndAsk.replyText.contains("সাথী"))
+
+        // Social open & social comment/message confirm
+        val fbOpen = ai.generateCompanionReply(
+            userMessage = "ফেসবুকে ঢোকো",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertEquals(PhoneActionType.OPEN_APP, fbOpen.actionType)
+        assertEquals("Facebook", fbOpen.actionParam)
+
+        val waMsg = ai.generateCompanionReply(
+            userMessage = "WhatsApp এ একটা মেসেজ পাঠাও আমি আসছি",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertEquals(PhoneActionType.SOCIAL_MESSAGE_CONFIRM, waMsg.actionType)
+
+        // Emotion awareness
+        val sadReply = ai.generateCompanionReply(
+            userMessage = "আজ কিছুই ভালো লাগছে না",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList(),
+            userEmotion = UserEmotion.SAD
+        ).getOrThrow()
+        assertTrue(sadReply.replyText.isNotBlank())
+
+        // Genre-specific stories
+        val islamicStory = ai.generateCompanionReply(
+            userMessage = "একটি ইসলামিক গল্প বলো",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertTrue(islamicStory.replyText.contains("উমর") || islamicStory.replyText.contains("আল্লাহ"))
+
+        val ghostStory = ai.generateCompanionReply(
+            userMessage = "একটি ভূতের গল্প বলো",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertTrue(ghostStory.replyText.contains("স্টেশন"))
     }
 }

@@ -109,6 +109,7 @@ dependencies {
   implementation(libs.retrofit)
   implementation(libs.mlkit.text.recognition)
   implementation(libs.mlkit.image.labeling)
+  implementation(libs.play.services.ads)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)

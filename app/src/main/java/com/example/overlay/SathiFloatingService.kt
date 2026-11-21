@@ -24,6 +24,7 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import com.example.MainActivity
@@ -59,7 +60,8 @@ class SathiFloatingService : Service() {
     private lateinit var deviceActions: DeviceActionExecutor
     private var voiceController: VoiceController? = null
 
-    private var replyTextView: TextView? = null
+    private var chatHistoryContainer: LinearLayout? = null
+    private var chatScrollView: ScrollView? = null
     private var statusTextView: TextView? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -143,18 +145,18 @@ class SathiFloatingService : Service() {
     private fun setupFloatingBubble() {
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
-        val orbSize = dp(58)
+        val orbSize = dp(60)
         val orb = TextView(this).apply {
             text = "✦ সাথী"
-            textSize = 11f
-            setTextColor(Color.WHITE)
+            textSize = 11.5f
+            setTextColor(Color.parseColor("#0D2558"))
             gravity = Gravity.CENTER
             background = GradientDrawable(
-                GradientDrawable.Orientation.TL_BR,
-                intArrayOf(Color.parseColor("#9C7BFF"), Color.parseColor("#6D3BFF"))
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(Color.parseColor("#FFE45E"), Color.parseColor("#4794FF"))
             ).apply {
                 shape = GradientDrawable.OVAL
-                setStroke(dp(2), Color.parseColor("#E9DDFF"))
+                setStroke(dp(2), Color.WHITE)
             }
             elevation = dp(10).toFloat()
         }
@@ -231,13 +233,13 @@ class SathiFloatingService : Service() {
         val wm = windowManager ?: return
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(14), dp(16), dp(14))
+            setPadding(dp(14), dp(12), dp(14), dp(12))
             background = GradientDrawable(
                 GradientDrawable.Orientation.TOP_BOTTOM,
-                intArrayOf(Color.parseColor("#251942"), Color.parseColor("#18102B"))
+                intArrayOf(Color.parseColor("#1D2C56"), Color.parseColor("#0E1D42"))
             ).apply {
                 cornerRadius = dp(24).toFloat()
-                setStroke(dp(1), Color.parseColor("#A78BFA"))
+                setStroke(dp(1), Color.parseColor("#FFE45E"))
             }
             elevation = dp(14).toFloat()
         }
@@ -247,8 +249,8 @@ class SathiFloatingService : Service() {
             gravity = Gravity.CENTER_VERTICAL
         }
         val titleTv = TextView(this).apply {
-            text = "✦ সাথী লাইভ (Gemini Style)"
-            setTextColor(Color.parseColor("#E9DDFF"))
+            text = "✦ সাথী ভাসমান চ্যাট"
+            setTextColor(Color.parseColor("#FFF099"))
             textSize = 15f
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
@@ -263,28 +265,30 @@ class SathiFloatingService : Service() {
         card.addView(headerRow)
 
         val statusTv = TextView(this).apply {
-            text = "যেকোনো প্রশ্ন বলুন বা নিচে লিখুন..."
-            setTextColor(Color.parseColor("#C4B5FD"))
+            text = "যেকোনো অ্যাপের উপরে লাইভ চ্যাট করুন..."
+            setTextColor(Color.parseColor("#9AC8FF"))
             textSize = 12f
-            setPadding(0, dp(4), 0, dp(6))
+            setPadding(0, dp(2), 0, dp(6))
         }
         statusTextView = statusTv
         card.addView(statusTv)
 
-        val replyTv = TextView(this).apply {
-            text = "আসসালামু আলাইকুম! আমি সাথী—বলুন কীভাবে সাহায্য করতে পারি?"
-            setTextColor(Color.WHITE)
-            textSize = 14f
-            maxLines = 5
-            ellipsize = TextUtils.TruncateAt.END
-            setPadding(dp(10), dp(10), dp(10), dp(10))
+        val scroll = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(165))
             background = GradientDrawable().apply {
-                setColor(Color.parseColor("#332359"))
+                setColor(Color.parseColor("#14234A"))
                 cornerRadius = dp(14).toFloat()
             }
+            setPadding(dp(8), dp(8), dp(8), dp(8))
         }
-        replyTextView = replyTv
-        card.addView(replyTv)
+        val historyLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        scroll.addView(historyLayout)
+        chatScrollView = scroll
+        chatHistoryContainer = historyLayout
+        card.addView(scroll)
+        appendFloatingChatLine(isUser = false, "আসসালামু আলাইকুম! আমি সাথী—বলুন কীভাবে সাহায্য করতে পারি?")
 
         val inputRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -406,34 +410,64 @@ class SathiFloatingService : Service() {
         }
     }
 
+    private fun appendFloatingChatLine(isUser: Boolean, text: String) {
+        val container = chatHistoryContainer ?: return
+        val bubble = TextView(this).apply {
+            this.text = if (isUser) "আপনি: $text" else "সাথী: $text"
+            setTextColor(if (isUser) Color.parseColor("#0D2558") else Color.WHITE)
+            textSize = 13f
+            setPadding(dp(10), dp(7), dp(10), dp(7))
+            background = GradientDrawable().apply {
+                setColor(if (isUser) Color.parseColor("#FFE45E") else Color.parseColor("#2A4585"))
+                cornerRadius = dp(12).toFloat()
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(6)
+            }
+        }
+        container.addView(bubble)
+        chatScrollView?.post { chatScrollView?.fullScroll(View.FOCUS_DOWN) }
+    }
+
     private fun inspectCurrentSharedScreen(question: String) {
-        if (!SathiScreenShareService.isSharing.value) {
+        val accessibilityContext = SathiScreenReaderService.formatScreenContextSummary()
+        if (!SathiScreenShareService.isSharing.value && accessibilityContext.isBlank()) {
             val guide = "প্রথমে সাথী অ্যাপের '+' বাটন থেকে 'ফোন স্ক্রিন শেয়ার করুন' চালু করুন, তারপর এখানে '👁️ স্ক্রিন' চাপুন।"
-            replyTextView?.text = guide
+            appendFloatingChatLine(isUser = false, guide)
             statusTextView?.text = "স্ক্রিন শেয়ার চালু নেই"
             voiceController?.speak(guide, SathiLanguage.BN, SathiVoiceProfile.FEMALE, SathiMood.WARM, autoResumeLiveAfter = false)
             return
         }
-        statusTextView?.text = "স্ক্রিন দেখছি..."
+        statusTextView?.text = "স্ক্রিন ও সব ডেটা পড়ছি..."
         serviceScope.launch {
             val frame = SathiScreenShareService.captureLatestFrame()
-            if (frame == null) {
-                statusTextView?.text = "ফ্রেম পাওয়া যায়নি"
-                replyTextView?.text = "স্ক্রিন ফ্রেম এখনো তৈরি হয়নি, অনুগ্রহ করে আবার চেষ্টা করুন।"
-                return@launch
+            val fullQuestion = buildString {
+                if (question.isNotBlank()) append(question)
+                if (accessibilityContext.isNotBlank()) {
+                    if (isNotEmpty()) append("\n")
+                    append(accessibilityContext)
+                }
             }
-            val analysis = aiService.analyzeImage(frame, question, SathiLanguage.BN, isScreenCapture = true).getOrElse {
-                "স্ক্রিন বিশ্লেষণ করা যায়নি।"
+            val analysis = if (frame != null) {
+                aiService.analyzeImage(frame, fullQuestion, SathiLanguage.BN, isScreenCapture = true).getOrElse {
+                    accessibilityContext.ifBlank { "স্ক্রিন বিশ্লেষণ করা যায়নি।" }
+                }
+            } else {
+                accessibilityContext.ifBlank { "স্ক্রিন ফ্রেম এখনো তৈরি হয়নি।" }
             }
-            replyTextView?.text = analysis
+            appendFloatingChatLine(isUser = false, analysis)
             statusTextView?.text = "স্ক্রিন বিশ্লেষণ সম্পন্ন"
             voiceController?.speak(analysis, SathiLanguage.BN, SathiVoiceProfile.FEMALE, SathiMood.WARM, autoResumeLiveAfter = false)
         }
     }
 
     private fun handleFloatingQuery(query: String) {
+        appendFloatingChatLine(isUser = true, query)
         val lower = query.lowercase()
-        if (SathiScreenShareService.isSharing.value &&
+        if ((SathiScreenShareService.isSharing.value || SathiScreenReaderService.isConnected.value) &&
             (lower.contains("স্ক্রিন") || lower.contains("screen") ||
                 lower.contains("এটা কী") || lower.contains("এখানে কী"))
         ) {
@@ -476,18 +510,21 @@ class SathiFloatingService : Service() {
             if (finalTurn.actionType != PhoneActionType.NONE &&
                 finalTurn.actionType != PhoneActionType.WEB_SEARCH &&
                 finalTurn.actionType != PhoneActionType.CALL_CONFIRM &&
-                finalTurn.actionType != PhoneActionType.SMS_CONFIRM
+                finalTurn.actionType != PhoneActionType.SMS_CONFIRM &&
+                finalTurn.actionType != PhoneActionType.SOCIAL_MESSAGE_CONFIRM
             ) {
                 deviceActions.executeAction(finalTurn.actionType, finalTurn.actionParam, finalTurn.secondaryParam, SathiLanguage.BN)
+            } else if (finalTurn.actionType == PhoneActionType.SOCIAL_MESSAGE_CONFIRM) {
+                deviceActions.executeConfirmedSocialMessage(finalTurn.actionParam, finalTurn.secondaryParam, SathiLanguage.BN)
             }
 
-            replyTextView?.text = finalTurn.replyText
+            appendFloatingChatLine(isUser = false, finalTurn.replyText)
             statusTextView?.text = "উত্তর প্রস্তুত"
             voiceController?.speak(
                 finalTurn.replyText,
                 SathiLanguage.BN,
                 SathiVoiceProfile.FEMALE,
-                SathiMood.WARM,
+                finalTurn.mood,
                 autoResumeLiveAfter = false
             )
         }

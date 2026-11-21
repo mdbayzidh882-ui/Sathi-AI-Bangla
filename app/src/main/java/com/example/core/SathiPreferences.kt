@@ -37,7 +37,9 @@ data class LocalSettingsState(
     val codeLockoutUntilMs: Long = 0L,
     val preferredLanguageFallback: String = "bn",
     val preferredVoiceFallback: String = "female",
-    val customGeminiApiKey: String = ""
+    val customGeminiApiKey: String = "",
+    val autoVoiceEnabled: Boolean = true,
+    val wakeWordEnabled: Boolean = false
 )
 
 class SathiPreferences(private val context: Context) {
@@ -52,6 +54,8 @@ class SathiPreferences(private val context: Context) {
         val PREFERRED_LANGUAGE = stringPreferencesKey("preferred_language")
         val PREFERRED_VOICE = stringPreferencesKey("preferred_voice")
         val CUSTOM_GEMINI_API_KEY = stringPreferencesKey("custom_gemini_api_key")
+        val AUTO_VOICE_ENABLED = booleanPreferencesKey("auto_voice_enabled")
+        val WAKE_WORD_ENABLED = booleanPreferencesKey("wake_word_enabled")
     }
 
     val settingsFlow: Flow<LocalSettingsState> = context.sathiDataStore.data.map { prefs ->
@@ -69,7 +73,9 @@ class SathiPreferences(private val context: Context) {
             codeLockoutUntilMs = prefs[Keys.CODE_LOCKOUT_UNTIL_MS] ?: 0L,
             preferredLanguageFallback = prefs[Keys.PREFERRED_LANGUAGE] ?: "bn",
             preferredVoiceFallback = prefs[Keys.PREFERRED_VOICE] ?: "female",
-            customGeminiApiKey = prefs[Keys.CUSTOM_GEMINI_API_KEY] ?: ""
+            customGeminiApiKey = prefs[Keys.CUSTOM_GEMINI_API_KEY] ?: "",
+            autoVoiceEnabled = prefs[Keys.AUTO_VOICE_ENABLED] ?: true,
+            wakeWordEnabled = prefs[Keys.WAKE_WORD_ENABLED] ?: false
         )
     }
 
@@ -132,6 +138,18 @@ class SathiPreferences(private val context: Context) {
     suspend fun saveCustomGeminiApiKey(apiKey: String) {
         context.sathiDataStore.edit { prefs ->
             prefs[Keys.CUSTOM_GEMINI_API_KEY] = apiKey.trim()
+        }
+    }
+
+    suspend fun setAutoVoiceEnabled(enabled: Boolean) {
+        context.sathiDataStore.edit { prefs ->
+            prefs[Keys.AUTO_VOICE_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setWakeWordEnabled(enabled: Boolean) {
+        context.sathiDataStore.edit { prefs ->
+            prefs[Keys.WAKE_WORD_ENABLED] = enabled
         }
     }
 

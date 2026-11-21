@@ -10,6 +10,7 @@ import com.example.model.MemoryCategory
 import com.example.model.PhoneActionType
 import com.example.model.SathiLanguage
 import com.example.model.SathiMood
+import com.example.model.UserEmotion
 import com.example.model.UserMemory
 import com.example.model.WebSource
 import com.google.mlkit.vision.common.InputImage
@@ -73,10 +74,35 @@ class SathiAiService {
         recentHistory: List<Pair<Boolean, String>>,
         webSources: List<WebSource> = emptyList(),
         allowLongTermMemory: Boolean = true,
-        apiKey: String = ""
+        apiKey: String = "",
+        userEmotion: UserEmotion? = null
     ): Result<SathiTurnResult> {
-        val text = userMessage.trim()
-        val lower = text.lowercase()
+        var text = userMessage.trim()
+        var lower = text.lowercase()
+
+        // -1. Handle instant barge-in ("থামো থামো...", "stop...") with optional follow-up command
+        val stopPrefixes = listOf(
+            "থামো থামো", "থামো", "থাম", "চুপ করো", "চুপ", "আরেকটা কথা বলি",
+            "stop speaking", "stop talking", "stop", "wait a second", "quiet"
+        )
+        val matchedStop = stopPrefixes.firstOrNull { lower.startsWith(it) || lower == it }
+        if (matchedStop != null) {
+            val remainder = text
+                .replace(Regex("^(থামো\\s*থামো|থামো|থাম|চুপ\\s*করো|চুপ|stop\\s*speaking|stop\\s*talking|stop|quiet|wait\\s*a\\s*second)[,।!?\\s]*", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("^(আরেকটা\\s*কথা\\s*বলি|একটা\\s*কথা\\s*শোনো|শোনো)[,।!?\\s]*"), "")
+                .trim()
+            if (remainder.length < 2) {
+                val reply = if (language == SathiLanguage.BN) {
+                    "জি, আমি থেমে গেলাম $userName! বলুন, এখন কী শুনতে বা করতে চান?"
+                } else {
+                    "Okay, I stopped right away! What would you like to talk about now?"
+                }
+                return Result.success(simpleTurn(reply, SathiMood.WARM))
+            } else {
+                text = remainder
+                lower = text.lowercase()
+            }
+        }
 
         // 0. Always handle strict local rules first (creator, time, explicit device commands)
         // Creator identity rule (strictly enforced)
@@ -171,7 +197,12 @@ class SathiAiService {
             return Result.success(simpleTurn(reply, SathiMood.HAPPY))
         }
 
-        // 6. YouTube action
+        // 5b. Social Apps & Messaging / Commenting (YouTube, Facebook, Instagram, TikTok, Messenger, WhatsApp)
+        detectSocialActionOrOpen(text, lower, language)?.let { socialTurn ->
+            return Result.success(socialTurn)
+        }
+
+        // 6. YouTube action (open home or search query)
         if (lower.contains("youtube") || lower.contains("ইউটিউব") || lower.contains("গান চালাও") ||
             (lower.contains("ভিডিও") && lower.contains("চালাও"))
         ) {
@@ -181,21 +212,52 @@ class SathiAiService {
                 .replace("youtube", "", ignoreCase = true)
                 .replace("চালাও", "")
                 .replace("খোলো", "")
+                .replace("ঢোকো", "")
+                .replace("ঢোকাও", "")
+                .replace("ঢুকো", "")
+                .replace("চালু করো", "")
                 .replace("play", "", ignoreCase = true)
                 .replace("open", "", ignoreCase = true)
                 .trim()
-                .ifBlank { if (language == SathiLanguage.BN) "বাংলা গান" else "relaxing music" }
+            val isPlainOpen = cleaned.isBlank() || cleaned == "এ" || cleaned == "অ্যাপ"
+            val query = if (isPlainOpen) "" else cleaned
             val reply = if (language == SathiLanguage.BN) {
-                "জি, আমি ইউটিউবে '$cleaned' চালু করছি।"
+                if (query.isEmpty()) "জি, ইউটিউব (YouTube) খুলে দিচ্ছি।"
+                else "জি, আমি ইউটিউবে '$query' চালু করছি।"
             } else {
-                "Sure! Opening YouTube for '$cleaned'."
+                if (query.isEmpty()) "Opening YouTube for you."
+                else "Sure! Opening YouTube for '$query'."
             }
-            return Result.success(simpleTurn(reply, SathiMood.HAPPY, PhoneActionType.YOUTUBE, cleaned))
+            return Result.success(
+                simpleTurn(
+                    reply = reply,
+                    mood = SathiMood.HAPPY,
+                    action = if (query.isEmpty()) PhoneActionType.OPEN_APP else PhoneActionType.YOUTUBE,
+                    param = if (query.isEmpty()) "YouTube" else query
+                )
+            )
         }
 
-        // 7. Stories, Jokes, Riddles, Poems (creative varied entertainment!)
-        if (lower.contains("গল্প") || lower.contains("story")) {
-            return Result.success(simpleTurn(nextStory(language, storyCursor++), SathiMood.HAPPY))
+        // 7. Stories, Jokes, Riddles, Poems (rich genre-aware & non-repetitive)
+        if (lower.contains("গল্প") || lower.contains("story") || lower.contains("কাহিনি") || lower.contains("কাহিনী")) {
+            if (apiKey.isNotBlank()) {
+                callGeminiRestWithSearch(
+                    apiKey = apiKey,
+                    userMessage = if (language == SathiLanguage.BN) {
+                        "ব্যবহারকারীর অনুরোধ: \"$text\"। একটি সুন্দর, সাবলীল, হৃদয়গ্রাহী ও সম্পূর্ণ নতুন ছোট বাংলা গল্প (৬-১০ বাক্যে) শোনাও।"
+                    } else {
+                        "User request: \"$text\". Tell a vivid, original, engaging short story in 6-9 sentences."
+                    },
+                    language = language,
+                    userName = userName,
+                    memories = memories,
+                    recentHistory = recentHistory,
+                    userEmotion = userEmotion
+                )?.let { geminiStory ->
+                    return Result.success(geminiStory)
+                }
+            }
+            return Result.success(simpleTurn(nextStory(language, storyCursor++, text), SathiMood.HAPPY))
         }
         if (lower.contains("কৌতুক") || lower.contains("জোক") || lower.contains("joke") || lower.contains("ধাঁধা")) {
             return Result.success(simpleTurn(nextJoke(language, jokeCursor++), SathiMood.PLAYFUL))
@@ -215,7 +277,6 @@ class SathiAiService {
         }
 
         // 10. If Optional Gemini API Key is configured, use full Gemini 2.5 Flash + Google Search grounding!
-        // Note: explicit device control commands (below) are checked first if the user triggers them clearly.
         val isDeviceAction = isExplicitPhoneControl(lower)
         if (!isDeviceAction && apiKey.isNotBlank()) {
             callGeminiRestWithSearch(
@@ -224,29 +285,33 @@ class SathiAiService {
                 language = language,
                 userName = userName,
                 memories = memories,
-                recentHistory = recentHistory
+                recentHistory = recentHistory,
+                userEmotion = userEmotion
             )?.let { cloudTurn ->
                 return Result.success(cloudTurn)
             }
         }
 
-        // 11. Genuine Web Search Intent (weather, currency, news, scores, explicit search, or real factual questions)
+        // 11. Genuine Web Search Intent (weather, prayer times, currency, news, scores, or factual questions)
         val isWeather = lower.contains("weather") || lower.contains("আবহাওয়া") || lower.contains("আবহাওয়া") ||
             lower.contains("তাপমাত্রা") || lower.contains("temperature") || lower.contains("বৃষ্টি")
+        val isPrayerTime = lower.contains("নামাজ") || lower.contains("ফজর") || lower.contains("যোহর") ||
+            lower.contains("আসর") || lower.contains("মাগরিব") || lower.contains("এশা") ||
+            lower.contains("ইফতার") || lower.contains("সেহরি") || lower.contains("prayer") || lower.contains("salah")
         val isCurrency = lower.contains("dollar") || lower.contains("usd") || lower.contains("euro") ||
             lower.contains("riyal") || lower.contains("dirham") || lower.contains("ডলার") ||
             lower.contains("রিয়াল") || lower.contains("রিয়াল") || lower.contains("দিরহাম")
         val isNewsOrScore = lower.contains("news") || lower.contains("খবর") || lower.contains("সংবাদ") ||
             lower.contains("score") || lower.contains("স্কোর") || lower.contains("ক্রিকেট") ||
             lower.contains("ফুটবল") || lower.contains("search") || lower.contains("খুঁজ") ||
-            lower.contains("সার্চ") || lower.contains("গুগল")
-        val isFactualQuestion = Regex("\\b(what is|who is|who was|where is|when did|how to|why is|explain|tell me about|capital of)\\b").containsMatchIn(lower) ||
-            Regex("(কে ছিলেন|কাকে বলে|রাজধানী|ইতিহাস|সম্পর্কে|কীভাবে|কিভাবে|কেন হয়|কেন হয়|দাম কত|কত টাকা)").containsMatchIn(lower)
+            lower.contains("সার্চ") || lower.contains("গুগল") || lower.contains("তথ্য")
+        val isFactualQuestion = Regex("\\b(what is|who is|who was|where is|when did|how to|why is|explain|tell me about|capital of|price of)\\b").containsMatchIn(lower) ||
+            Regex("(কে ছিলেন|কাকে বলে|রাজধানী|ইতিহাস|সম্পর্কে|কীভাবে|কিভাবে|কেন হয়|কেন হয়|দাম কত|কত টাকা|কোনটি|কয়টি|কতটি)").containsMatchIn(lower)
 
-        if (isWeather || isCurrency || isNewsOrScore || isFactualQuestion) {
+        if (isWeather || isPrayerTime || isCurrency || isNewsOrScore || isFactualQuestion) {
             return Result.success(
                 simpleTurn(
-                    reply = if (language == SathiLanguage.BN) "আমি তথ্য খুঁজে দেখছি..." else "Searching for live information...",
+                    reply = if (language == SathiLanguage.BN) "আমি লাইভ তথ্য খুঁজে দেখছি..." else "Searching for live information...",
                     mood = SathiMood.SERIOUS,
                     action = PhoneActionType.WEB_SEARCH,
                     param = text
@@ -336,17 +401,27 @@ class SathiAiService {
             return Result.success(simpleTurn(reply, SathiMood.WARM, PhoneActionType.SMS_CONFIRM, digits, text))
         }
 
-        // 13. Open installed app
-        if (lower.startsWith("open ") || lower.contains("খোলো") || lower.contains("চালু করো")) {
+        // 13. Open ANY installed app ("ঢোকো", "খোলো", "চালু করো", "open", "launch")
+        if (lower.startsWith("open ") || lower.startsWith("launch ") ||
+            lower.contains("খোলো") || lower.contains("খুলো") || lower.contains("চালু করো") ||
+            lower.contains("ঢোকো") || lower.contains("ঢোকাও") || lower.contains("ঢুকো") || lower.contains("ঢুকে যাও")
+        ) {
             val appName = text
-                .replace("open", "", ignoreCase = true)
+                .replace(Regex("(open|launch)", RegexOption.IGNORE_CASE), "")
                 .replace("খোলো", "")
+                .replace("খুলো", "")
                 .replace("চালু করো", "")
+                .replace("ঢোকো", "")
+                .replace("ঢোকাও", "")
+                .replace("ঢুকো", "")
+                .replace("ঢুকে যাও", "")
+                .replace("অ্যাপে", "")
                 .replace("অ্যাপ", "")
+                .replace(Regex("\\s+এ(\\s+|$)"), " ")
                 .trim()
             if (appName.isNotEmpty()) {
                 val reply = if (language == SathiLanguage.BN) {
-                    "আমি ফোনে '$appName' অ্যাপটি খোলার চেষ্টা করছি।"
+                    "জি, ফোনে '$appName' অ্যাপটি খুলে দিচ্ছি।"
                 } else {
                     "Opening '$appName' for you."
                 }
@@ -366,15 +441,36 @@ class SathiAiService {
             return Result.success(simpleTurn(reply, SathiMood.HAPPY))
         }
 
-        // 15. Comforting / Emotional Empathy
-        if (lower.contains("sad") || lower.contains("মন খারাপ") || lower.contains("কষ্ট") ||
+        // 15. Comforting / Rich Emotional Empathy (checks text + selected userEmotion)
+        if (lower.contains("sad") || lower.contains("মন খারাপ") || lower.contains("মন ভালো নেই") ||
+            lower.contains("ভালো লাগছে না") || lower.contains("কষ্ট") || lower.contains("কান্না") ||
             lower.contains("একা") || lower.contains("lonely") || lower.contains("tired") ||
-            lower.contains("ক্লান্ত") || lower.contains("দুঃখ") || lower.contains("stress")
+            lower.contains("ক্লান্ত") || lower.contains("দুঃখ") || lower.contains("stress") ||
+            lower.contains("রাগ") || lower.contains("বিরক্ত") || lower.contains("টেনশন") ||
+            lower.contains("দুশ্চিন্তা") || lower.contains("অসহায়") || lower.contains("depressed")
         ) {
-            val reply = if (language == SathiLanguage.BN) {
-                "$userName, মন খারাপ করবেন না। আমি আপনার সাথী—সবসময় আপনার পাশেই আছি। একটু পানি খেয়ে গভীর শ্বাস নিন, কঠিন সময় পেরিয়ে সব ঠিক হয়ে যাবে ইনশাআল্লাহ।"
-            } else {
-                "$userName, I'm right here with you. Take a slow, gentle breath—you don't have to carry everything alone. Things will get brighter soon."
+            val reply = when {
+                lower.contains("রাগ") || lower.contains("বিরক্ত") || lower.contains("angry") -> {
+                    if (language == SathiLanguage.BN) {
+                        "$userName, বুঝতে পারছি আপনি খুব বিরক্ত বা রাগান্বিত আছেন। কয়েক সেকেন্ড চোখ বন্ধ করে লম্বা শ্বাস নিন। চাইলে মনের সব রাগ আমার সাথে শেয়ার করতে পারেন—আমি মন দিয়ে শুনছি।"
+                    } else {
+                        "$userName, I hear your frustration. Take a slow deep breath—you can vent freely to me, I'm right here listening."
+                    }
+                }
+                lower.contains("টেনশন") || lower.contains("দুশ্চিন্তা") || lower.contains("stress") -> {
+                    if (language == SathiLanguage.BN) {
+                        "চিন্তা করবেন না $userName। একসাথে সব সমস্যার সমাধান করা যায় না—আমরা ধাপে ধাপে ভাববো। আপনি এখন কী নিয়ে টেনশন করছেন বলুন তো?"
+                    } else {
+                        "Take it one step at a time, $userName. Tell me what is weighing on your mind and we'll figure it out together."
+                    }
+                }
+                else -> {
+                    if (language == SathiLanguage.BN) {
+                        "$userName, মন খারাপ করবেন না। আমি আপনার সাথী—সবসময় আপনার পাশেই আছি। একটু পানি খেয়ে গভীর শ্বাস নিন, কঠিন সময় পেরিয়ে সব ঠিক হয়ে যাবে ইনশাআল্লাহ।"
+                    } else {
+                        "$userName, I'm right here with you. Take a slow, gentle breath—you don't have to carry everything alone. Things will get brighter soon."
+                    }
+                }
             }
             return Result.success(simpleTurn(reply, SathiMood.COMFORTING))
         }
@@ -431,21 +527,86 @@ class SathiAiService {
             )
         }
 
-        // Natural, non-repetitive conversational replies
+        // Natural, non-repetitive conversational replies (emotion-aware!)
+        if (userEmotion == UserEmotion.SAD || userEmotion == UserEmotion.ANGRY || userEmotion == UserEmotion.ANXIOUS) {
+            val empathyReply = if (language == SathiLanguage.BN) {
+                "আমি বুঝতে পারছি $userName, আপনার মনটা এখন ভালো নেই (${userEmotion.emoji} ${userEmotion.labelBn})। মন খুলে আমাকে বলুন কী হয়েছে—আমি আপনার পাশেই আছি।"
+            } else {
+                "I understand you're feeling ${userEmotion.labelEn.lowercase()} right now, $userName. I'm right here—tell me whatever is on your mind."
+            }
+            return Result.success(simpleTurn(empathyReply, SathiMood.COMFORTING))
+        }
+
         val naturalBn = listOf(
             "আমি আপনার কথা মন দিয়ে শুনছি, $userName। এ বিষয়ে আপনি কী জানতে চান বা করতে চান বলুন?",
-            "জি $userName! আপনি চাইলে সময়-তারিখ, জেলার আবহাওয়া, ডলারের রেট, খবর বা '+' বাটন দিয়ে ছবি, ভিডিও ও স্ক্রিন শেয়ার দেখাতে পারেন।",
+            "জি $userName! আপনি চাইলে সময়-তারিখ, জেলার আবহাওয়া, নামাজের সময়, গল্প, অথবা ফেসবুক/ইউটিউব/হোয়াটসঅ্যাপ খুলতে বলতে পারেন।",
             if (lastAiReply.isNotBlank()) "জি $userName, আমরা '${lastUserMsg.take(28)}' নিয়ে কথা বলছিলাম—এখন কী সাহায্য করতে পারি বলুন!"
             else "আমি সাথেই আছি, $userName। কোন বিষয়টি নিয়ে কথা বলব বা কোন তথ্যটি খুঁজে দেব বলুন!"
         )
         val naturalEn = listOf(
             "I hear you, $userName. Tell me more, or tap + to share a photo, video, or your phone screen!",
-            "Got it, $userName! You can ask me the time, weather in any district, live news, currency rates, or a story anytime.",
+            "Got it, $userName! You can ask me the time, weather, prayer times, stories, or open apps like YouTube, WhatsApp, or Messenger.",
             "I'm right here with you, $userName. What would you like to explore next?"
         )
         val idx = chatCursor++ % naturalBn.size
         val reply = if (language == SathiLanguage.BN) naturalBn[idx] else naturalEn[idx]
-        return Result.success(simpleTurn(reply, SathiMood.WARM))
+        return Result.success(simpleTurn(reply, userEmotion?.sathiMood ?: SathiMood.WARM))
+    }
+
+    private fun detectSocialActionOrOpen(
+        text: String,
+        lower: String,
+        language: SathiLanguage
+    ): SathiTurnResult? {
+        val platform = when {
+            lower.contains("whatsapp") || lower.contains("হোয়াটস") || lower.contains("হোয়াটস") -> "WhatsApp"
+            lower.contains("messenger") || lower.contains("মেসেঞ্জার") || lower.contains("ম্যাসেঞ্জার") -> "Messenger"
+            lower.contains("facebook") || lower.contains("ফেসবুক") || Regex("\\bfb\\b").containsMatchIn(lower) -> "Facebook"
+            lower.contains("instagram") || lower.contains("ইনস্টাগ্রাম") || lower.contains("ইন্সটাগ্রাম") -> "Instagram"
+            lower.contains("tiktok") || lower.contains("টিকটক") -> "TikTok"
+            else -> null
+        } ?: return null
+
+        val wantsMessageOrComment = lower.contains("মেসেজ") || lower.contains("কমেন্ট") ||
+            lower.contains("কমপ্লেন") || lower.contains("রিপ্লাই") || lower.contains("লিখ") ||
+            lower.contains("পাঠা") || lower.contains("message") || lower.contains("comment") ||
+            lower.contains("reply") || lower.contains("send") || lower.contains("post")
+
+        if (wantsMessageOrComment) {
+            val cleanedBody = text
+                .replace(Regex("(whatsapp|messenger|facebook|instagram|tiktok|fb|send|message|comment|reply|post)", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("(হোয়াটসঅ্যাপে|হোয়াটসঅ্যাপে|হোয়াটসঅ্যাপ|হোয়াটসঅ্যাপ|মেসেঞ্জারে|মেসেঞ্জার|ফেসবুকে|ফেসবুক|ইনস্টাগ্রামে|ইনস্টাগ্রাম|টিকটকে|টিকটক)"), "")
+                .replace(Regex("(একটি|একটা|করে|লিখে|দাও|করো|পাঠাও|পাঠিয়ে|মেসেজ|কমেন্ট|কমপ্লেন|বলে|যে)"), " ")
+                .replace(Regex("\\s+"), " ")
+                .trim()
+                .ifBlank { text }
+
+            val reply = if (language == SathiLanguage.BN) {
+                "আমি $platform-এ এই লেখাটি প্রস্তুত করেছি: \"$cleanedBody\"। নিচে নিশ্চিত করলে $platform খুলে যাবে।"
+            } else {
+                "I prepared your message/comment for $platform: \"$cleanedBody\". Confirm below to open $platform."
+            }
+            return simpleTurn(
+                reply = reply,
+                mood = SathiMood.WARM,
+                action = PhoneActionType.SOCIAL_MESSAGE_CONFIRM,
+                param = platform,
+                secondary = cleanedBody
+            )
+        }
+
+        // Otherwise open that social app directly
+        val reply = if (language == SathiLanguage.BN) {
+            "জি, $platform খুলে দিচ্ছি।"
+        } else {
+            "Opening $platform for you."
+        }
+        return simpleTurn(
+            reply = reply,
+            mood = SathiMood.HAPPY,
+            action = PhoneActionType.OPEN_APP,
+            param = platform
+        )
     }
 
     suspend fun analyzeImage(
@@ -453,16 +614,24 @@ class SathiAiService {
         question: String,
         language: SathiLanguage,
         isScreenCapture: Boolean = false,
-        apiKey: String = ""
+        apiKey: String = "",
+        screenTextContext: String = ""
     ): Result<String> = withContext(Dispatchers.Default) {
         try {
             val safeBitmap = BitmapUtils.ensureSoftwareBitmap(bitmap)
 
             if (apiKey.isNotBlank()) {
+                val combinedPrompt = buildString {
+                    if (question.isNotBlank()) append(question)
+                    if (screenTextContext.isNotBlank()) {
+                        if (isNotEmpty()) append("\n\n")
+                        append(screenTextContext)
+                    }
+                }
                 callGeminiVisionRest(
                     apiKey = apiKey,
                     bitmap = safeBitmap,
-                    question = question,
+                    question = combinedPrompt,
                     language = language,
                     isScreenCapture = isScreenCapture
                 )?.let { geminiReply ->
@@ -485,13 +654,16 @@ class SathiAiService {
                     } else {
                         append("আমি আপনার ছবিটি বিশ্লেষণ করেছি (${safeBitmap.width}×${safeBitmap.height}, $orientationBn):\n")
                     }
+                    if (screenTextContext.isNotBlank()) {
+                        append("• স্ক্রিনের লাইভ অ্যাপ ও সম্পূর্ণ তথ্য:\n${screenTextContext.take(650)}\n")
+                    }
                     if (translatedLabelsBn.isNotEmpty()) {
                         append("• দৃশ্যে যা বোঝা যাচ্ছে: ${translatedLabelsBn.joinToString(", ")}।\n")
                     }
                     append("• আলো ও রঙ: ${stats.lightingBn}, ${stats.toneBn} (কনট্রাস্ট: ${stats.contrastLabelBn})।\n")
                     if (recognizedText.isNotBlank()) {
-                        append("• লেখা পাওয়া গেছে:\n\"${recognizedText.take(260)}\"")
-                    } else if (translatedLabelsBn.isEmpty()) {
+                        append("• ছবির লেখা পাওয়া গেছে:\n\"${recognizedText.take(260)}\"")
+                    } else if (translatedLabelsBn.isEmpty() && screenTextContext.isBlank()) {
                         append("• ছবির উজ্জ্বলতা ও রঙের গঠন পরিষ্কারভাবে পড়া হয়েছে।")
                     }
                     if (question.isNotBlank()) {
@@ -504,6 +676,9 @@ class SathiAiService {
                         append("I looked at your shared screen (${safeBitmap.width}×${safeBitmap.height}):\n")
                     } else {
                         append("I analyzed your photo (${safeBitmap.width}×${safeBitmap.height}, $orientationEn):\n")
+                    }
+                    if (screenTextContext.isNotBlank()) {
+                        append("• Live screen data & active app:\n${screenTextContext.take(650)}\n")
                     }
                     if (labels.isNotEmpty()) {
                         append("• Detected subjects: ${labels.take(4).joinToString(", ")}.\n")
@@ -856,7 +1031,12 @@ class SathiAiService {
             lower.startsWith("call ") || lower.contains("কল কর") || lower.contains("ফোন কর") ||
             lower.startsWith("sms ") || lower.startsWith("message ") || lower.contains("মেসেজ পাঠা") ||
             lower.contains("youtube") || lower.contains("ইউটিউব") ||
-            lower.startsWith("open ") || lower.contains("খোলো") || lower.contains("চালু করো")
+            lower.contains("facebook") || lower.contains("ফেসবুক") ||
+            lower.contains("instagram") || lower.contains("ইনস্টাগ্রাম") ||
+            lower.contains("tiktok") || lower.contains("টিকটক") ||
+            lower.contains("messenger") || lower.contains("মেসেঞ্জার") ||
+            lower.contains("whatsapp") || lower.contains("হোয়াটসঅ্যাপ") || lower.contains("হোয়াটসঅ্যাপ") ||
+            lower.startsWith("open ") || lower.contains("খোলো") || lower.contains("চালু করো") || lower.contains("ঢোকো")
 
     private suspend fun callGeminiRestWithSearch(
         apiKey: String,
@@ -864,7 +1044,8 @@ class SathiAiService {
         language: SathiLanguage,
         userName: String,
         memories: List<UserMemory>,
-        recentHistory: List<Pair<Boolean, String>>
+        recentHistory: List<Pair<Boolean, String>>,
+        userEmotion: UserEmotion? = null
     ): SathiTurnResult? = withContext(Dispatchers.IO) {
         try {
             val langName = if (language == SathiLanguage.BN) "Bengali (বাংলা)" else "English"
@@ -875,6 +1056,9 @@ class SathiAiService {
                 append("You are Sathi (সাথী), a warm, caring, intelligent personal AI voice companion created by Mohammad Bayzid Hasan (মোহাম্মদ বাইজিদ হাসান). ")
                 append("Never say 'নমস্কার' or any religious greeting other than 'আসসালামু আলাইকুম' when greeting. ")
                 append("Address the user warmly as $userName. Reply clearly and concisely in $langName so it sounds natural when spoken aloud.")
+                if (userEmotion != null) {
+                    append(" The user's current emotional mood is ${userEmotion.labelEn} (${userEmotion.emoji}); respond with fitting empathy and care.")
+                }
                 if (memorySummary.isNotBlank()) {
                     append(" User memories: $memorySummary.")
                 }
@@ -1042,19 +1226,49 @@ class SathiAiService {
     )
 
     companion object {
-        fun nextStory(language: SathiLanguage, index: Int): String {
-            val storiesBn = listOf(
+        fun nextStory(language: SathiLanguage, index: Int, topicHint: String = ""): String {
+            val lower = topicHint.lowercase()
+
+            val islamicStoriesBn = listOf(
+                "এক রাতে খলিফা হযরত উমর (রা.) মদিনার অলিগলি ঘুরে দেখছিলেন। হঠাৎ এক তাঁবুর ভেতর থেকে বাচ্চাদের কান্নার শব্দ শুনতে পেলেন। কাছে গিয়ে দেখলেন, এক মা চুলোয় খালি পাতিল বসিয়ে পানি জ্বাল দিচ্ছেন শুধু ক্ষুধার্ত বাচ্চাদের ঘুম পাড়ানোর জন্য। তা দেখে খলিফার চোখে পানি এসে গেল। তিনি নিজেই বায়তুল মাল থেকে আটা ও ঘি পিঠে বয়ে এনে সেই মায়ের হাতে তুলে দিলেন এবং রান্না শেষ না হওয়া পর্যন্ত সেখানেই অপেক্ষা করলেন। একজন প্রকৃত নেতার দায়িত্ববোধ কত মহান হতে পারে, এটি তার অনন্য উদাহরণ!",
+                "এক দরিদ্র মেষপালক মরুভূমিতে ছাগল চরাচ্ছিলেন। এক পথিক তাকে পরীক্ষা করার জন্য বলল, 'ভাই, আমাকে একটা ছাগল বিক্রি করে দাও—মালিক তো আর জানবে না!' রাখাল আকাশের দিকে তাকিয়ে দৃঢ় কণ্ঠে উত্তর দিলেন, 'মালিক না দেখলেও মহান আল্লাহ তো সবই দেখছেন!' তার এই আমানতদারিতা ও সততার কথা শুনে পথিক মুগ্ধ হয়ে গেলেন এবং পরে সেই রাখালকে দাসত্ব থেকে মুক্ত করে দিলেন।"
+            )
+            val funnyStoriesBn = listOf(
+                "একবার নবাব গোপাল ভাঁড়কে জিজ্ঞাসা করলেন, 'গোপাল, বলো তো পৃথিবীতে সবচেয়ে বেশি মানুষ কোন পেশায় আছে?' গোপাল একটু ভেবে বলল, 'হুজুর, ডাক্তার!' নবাব অবাক হয়ে বললেন, 'এত কম ডাক্তার, তুমি বলছ সবচেয়ে বেশি?' গোপাল হেসে বলল, 'হুজুর, একবার মাথা ব্যথার কথা বলুন—দেখবেন পাড়ার সবাই একসাথে ওষুধ ও উপদেশ দেওয়া শুরু করেছে! সবাই-ই তো ডাক্তার!'",
+                "একদিন এক অলস লোক নদীর পাড়ে বসে ছিল। এক পথিক জিজ্ঞেস করল, 'ভাই, নদী পার হবো কীভাবে?' অলস লোকটি শুয়ে শুয়ে বলল, 'সকাল থেকে তো আমিও দেখছি, এপার তো ওপারে যাচ্ছে না, ওপারও এপারে আসছে না!'"
+            )
+            val spookyStoriesBn = listOf(
+                "শীতের এক কুয়াশাচ্ছন্ন রাতে এক ট্রেনযাত্রী ভুল স্টেশনে নেমে পড়লেন। স্টেশনজুড়ে নিস্তব্ধতা, শুধু দূরের একটি টিমটিমে হলুদ বাতি জ্বলছে। হঠাৎ তিনি দেখলেন এক বৃদ্ধ স্টেশনমাস্টার হাতে লাল লণ্ঠন নিয়ে দাঁড়িয়ে আছেন এবং বললেন, 'সামনের সেতুতে ভাঙন ধরেছে, তাই আজ কোনো ট্রেন যাবে না।' যাত্রীটি নিরাপদে রাত কাটালেন। পরদিন সকালে গ্রামবাসীর কাছে শুনলেন, বহু বছর আগেই সেই স্টেশনটি বন্ধ হয়ে গেছে—আর সেই রাতে সত্যিই সামনের রেলসেতুটি ধসে পড়েছিল! আজও লোকে বলে, এক অদৃশ্য রক্ষক সেদিন যাত্রীটিকে বাঁচিয়ে দিয়েছিলেন।"
+            )
+            val fairyStoriesBn = listOf(
+                "বহু বছর আগে পাহাড়ের ওপারে এক নীল নদীর তীরে ছিল এক সোনার পাখির বন। সেই পাখির ডানার প্রতিটি পালক রোদের আলোয় ঝলমল করত, আর তার সুর শুনলে অসুস্থ মানুষও সুস্থ হয়ে উঠত। একদিন এক সৎ কাঠুরিয়া বনের ভেতর আহত পাখিটিকে খুঁজে পেয়ে নিজের গায়ের চাদরে জড়িয়ে বাড়ি নিয়ে এলো এবং সেবা করে সুস্থ করে তুলল। বিদায়ের দিন সোনার পাখিটি তার হাতে একটি উজ্জ্বল পালক দিয়ে বলল, 'যখনই বিপদে পড়বে, সৎ পথে থেকো—আমি ঠিকই সাহায্য পাঠাব।' এরপর থেকেই কাঠুরিয়ার জীবন আলোকিত হয়ে উঠল।"
+            )
+            val generalStoriesBn = listOf(
                 "এক ছোট্ট গ্রামের বালক প্রতিদিন ভোরে পাখিদের জন্য ছাদে পানি ও দানা রেখে যেত। প্রথমে কেউ গুরুত্ব দিত না, কিন্তু কয়েক মাস পর পুরো গ্রাম জুড়ে পাখির কলরব ছড়িয়ে পড়ল। ছোট্ট একটি ভালো কাজও পুরো পরিবেশ বদলে দিতে পারে!",
                 "এক কৃষকের পুরোনো কলসিতে একটি ছোট ফাটল ছিল, তাই পথ চলতে অর্ধেক পানি পড়ে যেত। কলসিটি খুব মন খারাপ করল। কিন্তু কৃষক হেসে দেখাল—সেই পথের ধারেই ফুটেছে রঙিন সব ফুল! আমাদের দুর্বলতাও কখনো কখনো অন্যের জীবনে সৌন্দর্য ছড়িয়ে দেয়।",
-                "একদিন এক বৃদ্ধ নাবিক ঝড়ের রাতে ছোট একটি বাতি জ্বালিয়ে রাখলেন তীরের পাশে। সেই সামান্য আলো দেখেই পথ হারানো তিনটি নৌকা নিরাপদে তীরে ফিরে এসেছিল। আশা যত ছোটই হোক, তা বড় পথ দেখাতে পারে।"
+                "একদিন এক বৃদ্ধ নাবিক ঝড়ের রাতে ছোট একটি বাতি জ্বালিয়ে রাখলেন তীরের পাশে। সেই সামান্য আলো দেখেই পথ হারানো তিনটি নৌকা নিরাপদে তীরে ফিরে এসেছিল। আশা যত ছোটই হোক, তা বড় পথ দেখাতে পারে।",
+                "দুই বন্ধু মরুভূমি দিয়ে হাঁটছিল। পথে সামান্য বিষয় নিয়ে ঝগড়া হলো এবং একজন বালিতে লিখল, 'আজ আমার বন্ধু আমাকে কষ্ট দিয়েছে।' কিছুক্ষণ পর তারা এক নদীতে সাঁতার কাটতে গিয়ে একজন ডুবতে লাগল—বন্ধুটি প্রাণপণ চেষ্টা করে তাকে বাঁচাল। তখন সে একটি পাথরে খোদাই করে লিখল, 'আজ আমার বন্ধু আমার জীবন বাঁচিয়েছে।' কষ্টগুলো বালি তে আর ভালোবাসাগুলো পাথরে লিখে রাখাই প্রকৃত বন্ধুত্ব।"
             )
+
+            val allBn = generalStoriesBn + islamicStoriesBn + funnyStoriesBn + fairyStoriesBn + spookyStoriesBn
+            if (language == SathiLanguage.BN) {
+                val chosenList = when {
+                    lower.contains("ইসলাম") || lower.contains("নবী") || lower.contains("সাহাব") -> islamicStoriesBn
+                    lower.contains("হাসি") || lower.contains("মজার") || lower.contains("গোপাল") -> funnyStoriesBn
+                    lower.contains("ভূত") || lower.contains("ভৌতিক") || lower.contains("ভয়ের") -> spookyStoriesBn
+                    lower.contains("রূপকথা") || lower.contains("পরী") || lower.contains("রাজ") -> fairyStoriesBn
+                    else -> allBn
+                }
+                return chosenList[index % chosenList.size]
+            }
+
             val storiesEn = listOf(
                 "A young boy left a small bowl of water on his roof each morning for tired sparrows. Soon his whole neighborhood joined in, filling the town with birdsong. Even small kindnesses ripple further than we see.",
                 "A cracked clay pot felt ashamed that half its water spilled along the garden path. One day the gardener smiled and pointed to the wildflowers blooming only along that side—reminding us that flaws can nourish beauty too.",
-                "During a dark storm, a lighthouse keeper lit one steady lantern along a quiet shore. Three lost boats spotted that single beam and sailed safely home. Never underestimate a steady light."
+                "During a dark storm, a lighthouse keeper lit one steady lantern along a quiet shore. Three lost boats spotted that single beam and sailed safely home. Never underestimate a steady light.",
+                "Two friends were walking across a desert. After a brief argument, one wrote in the sand: 'Today my friend hurt my feelings.' Later, when he slipped into quicksand, his friend risked everything to pull him out. He carved into stone: 'Today my friend saved my life.' Let pain fade like footprints in sand, and cherish kindness forever."
             )
-            val list = if (language == SathiLanguage.BN) storiesBn else storiesEn
-            return list[index % list.size]
+            return storiesEn[index % storiesEn.size]
         }
 
         fun nextJoke(language: SathiLanguage, index: Int): String {

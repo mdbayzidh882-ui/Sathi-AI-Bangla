@@ -25,6 +25,7 @@ data class VoiceEngineState(
     val listening: Boolean = false,
     val speaking: Boolean = false,
     val liveSessionActive: Boolean = false,
+    val autoVoiceEnabled: Boolean = true,
     val muted: Boolean = false,
     val partialTranscript: String = "",
     val ttsReady: Boolean = false,
@@ -64,10 +65,10 @@ class VoiceController(
                     override fun onDone(utteranceId: String?) {
                         _state.value = _state.value.copy(speaking = false)
                         consecutiveLiveSilenceCount = 0
-                        if (_state.value.liveSessionActive && liveAutoListenAfterTts && !_state.value.muted) {
+                        if (_state.value.liveSessionActive && _state.value.autoVoiceEnabled && liveAutoListenAfterTts && !_state.value.muted) {
                             liveAutoListenAfterTts = false
                             mainHandler.postDelayed({
-                                if (_state.value.liveSessionActive && !_state.value.muted && !_state.value.listening && !_state.value.speaking) {
+                                if (_state.value.liveSessionActive && _state.value.autoVoiceEnabled && !_state.value.muted && !_state.value.listening && !_state.value.speaking) {
                                     startListeningInternal(activeLanguage, preferOfflineRecognition)
                                 }
                             }, 350L)
@@ -90,11 +91,35 @@ class VoiceController(
         }
     }
 
+    fun setAutoVoiceEnabled(enabled: Boolean) {
+        _state.value = _state.value.copy(autoVoiceEnabled = enabled)
+        if (!enabled) {
+            liveAutoListenAfterTts = false
+            _state.value = _state.value.copy(liveSessionActive = false)
+        }
+    }
+
+    fun startListeningAfterWake(language: SathiLanguage, preferOffline: Boolean = false) {
+        activeLanguage = language
+        preferOfflineRecognition = preferOffline
+        consecutiveLiveSilenceCount = 0
+        _state.value = _state.value.copy(
+            liveSessionActive = _state.value.autoVoiceEnabled,
+            muted = false,
+            speechErrorMessage = null
+        )
+        startListeningInternal(language, preferOffline)
+    }
+
     fun startLiveSession(language: SathiLanguage, preferOffline: Boolean = false) {
         activeLanguage = language
         preferOfflineRecognition = preferOffline
         consecutiveLiveSilenceCount = 0
-        _state.value = _state.value.copy(liveSessionActive = true, muted = false, speechErrorMessage = null)
+        _state.value = _state.value.copy(
+            liveSessionActive = _state.value.autoVoiceEnabled,
+            muted = false,
+            speechErrorMessage = null
+        )
         startListeningInternal(language, preferOffline)
     }
 
@@ -116,7 +141,7 @@ class VoiceController(
         if (muted) {
             liveAutoListenAfterTts = false
             stopListening()
-        } else if (_state.value.liveSessionActive && !_state.value.speaking && !_state.value.listening) {
+        } else if (_state.value.liveSessionActive && _state.value.autoVoiceEnabled && !_state.value.speaking && !_state.value.listening) {
             startListeningInternal(activeLanguage, preferOfflineRecognition)
         }
     }
@@ -297,7 +322,7 @@ class VoiceController(
         language: SathiLanguage,
         voiceProfile: SathiVoiceProfile,
         mood: SathiMood,
-        autoResumeLiveAfter: Boolean = _state.value.liveSessionActive
+        autoResumeLiveAfter: Boolean = _state.value.liveSessionActive && _state.value.autoVoiceEnabled
     ) {
         val cleanText = text.trim()
         if (cleanText.isEmpty()) return
@@ -305,7 +330,7 @@ class VoiceController(
 
         mainHandler.post {
             try {
-                liveAutoListenAfterTts = autoResumeLiveAfter && _state.value.liveSessionActive
+                liveAutoListenAfterTts = autoResumeLiveAfter && _state.value.liveSessionActive && _state.value.autoVoiceEnabled
 
                 val hasBanglaChars = cleanText.any { it in '\u0980'..'\u09FF' }
                 val targetLocale = if (language == SathiLanguage.BN || hasBanglaChars) {

@@ -35,14 +35,21 @@ class WebSearchService {
                 }
             }
 
-            // 2. Live currency exchange rates (USD/EUR/SAR/AED/INR to BDT)
+            // 2. Live Islamic Prayer Times (নামাজের সময়সূচি)
+            if (isPrayerTimeQuery(lower)) {
+                fetchPrayerTimesSource(trimmed, language)?.let { prayerSource ->
+                    return@withContext listOf(prayerSource)
+                }
+            }
+
+            // 3. Live currency exchange rates (USD/EUR/SAR/AED/INR to BDT)
             if (isCurrencyQuery(lower)) {
                 fetchExchangeRateSource(trimmed, language)?.let { rateSource ->
                     return@withContext listOf(rateSource)
                 }
             }
 
-            // 3. Live news / sports / scores -> Google News RSS for Bangladesh + Global
+            // 4. Live news / sports / scores -> Google News RSS for Bangladesh + Global
             val results = mutableListOf<WebSource>()
             if (isNewsOrScoreQuery(lower)) {
                 results.addAll(fetchGoogleNewsRss(trimmed, language))
@@ -104,11 +111,51 @@ class WebSearchService {
             ((lower.contains("টাকা") || lower.contains("রেট")) &&
                 (lower.contains("দাম") || lower.contains("কত") || lower.contains("rate")))
 
+    private fun isPrayerTimeQuery(lower: String): Boolean =
+        lower.contains("নামাজ") || lower.contains("ফজর") || lower.contains("যোহর") ||
+            lower.contains("জোহর") || lower.contains("আসর") || lower.contains("মাগরিব") ||
+            lower.contains("এশা") || lower.contains("ইফতার") || lower.contains("সেহরি") ||
+            lower.contains("prayer time") || lower.contains("namaz") || lower.contains("salah")
+
     private fun isNewsOrScoreQuery(lower: String): Boolean =
         lower.contains("news") || lower.contains("খবর") || lower.contains("সংবাদ") ||
             lower.contains("score") || lower.contains("স্কোর") || lower.contains("খেলা") ||
             lower.contains("cricket") || lower.contains("ক্রিকেট") || lower.contains("football") ||
             lower.contains("ফুটবল") || lower.contains("আজকের") || lower.contains("today")
+
+    private fun fetchPrayerTimesSource(query: String, language: SathiLanguage): WebSource? {
+        return try {
+            val resolved = resolveLocation(query)
+            val cityEng = resolved.displayName.substringBefore("/").trim().ifBlank { "Dhaka" }
+            val encodedCity = URLEncoder.encode(cityEng, "UTF-8")
+            val url = "https://api.aladhan.com/v1/timingsByCity?city=$encodedCity&country=Bangladesh&method=1"
+            val req = Request.Builder().url(url).header("User-Agent", "SathiAndroidApp/1.0").build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return null
+                val body = resp.body?.string() ?: return null
+                val timings = JSONObject(body).optJSONObject("data")?.optJSONObject("timings") ?: return null
+                val fajr = timings.optString("Fajr")
+                val dhuhr = timings.optString("Dhuhr")
+                val asr = timings.optString("Asr")
+                val maghrib = timings.optString("Maghrib")
+                val isha = timings.optString("Isha")
+                if (fajr.isBlank()) return null
+
+                val snippet = if (language == SathiLanguage.BN) {
+                    "ফজর: $fajr • যোহর: $dhuhr • আসর: $asr • মাগরিব: $maghrib • এশা: $isha"
+                } else {
+                    "Fajr: $fajr • Dhuhr: $dhuhr • Asr: $asr • Maghrib: $maghrib • Isha: $isha"
+                }
+                WebSource(
+                    title = if (language == SathiLanguage.BN) "${resolved.displayName} — আজকের নামাজের সময়সূচি" else "${resolved.displayName} — Prayer Times",
+                    snippet = snippet,
+                    url = "https://aladhan.com/"
+                )
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
 
     private fun fetchExchangeRateSource(query: String, language: SathiLanguage): WebSource? {
         return try {
@@ -165,12 +212,16 @@ class WebSearchService {
             val url = "https://api.open-meteo.com/v1/forecast" +
                 "?latitude=${resolved.lat}&longitude=${resolved.lon}" +
                 "&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m" +
-                "&timezone=auto"
+                "&daily=temperature_2m_max,temperature_2m_min&forecast_days=2&timezone=auto"
             val req = Request.Builder().url(url).header("User-Agent", "SathiAndroidApp/1.0").build()
             client.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return null
                 val body = resp.body?.string() ?: return null
-                val current = JSONObject(body).optJSONObject("current") ?: return null
+                val root = JSONObject(body)
+                val current = root.optJSONObject("current") ?: return null
+                val daily = root.optJSONObject("daily")
+                val todayMax = daily?.optJSONArray("temperature_2m_max")?.optDouble(0, Double.NaN) ?: Double.NaN
+                val todayMin = daily?.optJSONArray("temperature_2m_min")?.optDouble(0, Double.NaN) ?: Double.NaN
                 val temp = current.optDouble("temperature_2m", Double.NaN)
                 val feels = current.optDouble("apparent_temperature", temp)
                 val humidity = current.optInt("relative_humidity_2m", -1)
@@ -180,6 +231,8 @@ class WebSearchService {
 
                 val condBn = weatherCodeToBn(wCode)
                 val condEn = weatherCodeToEn(wCode)
+                val rangeBn = if (!todayMax.isNaN() && !todayMin.isNaN()) " (সর্বোচ্চ ${todayMax}°C / সর্বনিম্ন ${todayMin}°C)" else ""
+                val rangeEn = if (!todayMax.isNaN() && !todayMin.isNaN()) " (High ${todayMax}°C / Low ${todayMin}°C)" else ""
 
                 val title = if (language == SathiLanguage.BN) {
                     "${resolved.displayName} - লাইভ আবহাওয়া"
@@ -187,9 +240,9 @@ class WebSearchService {
                     "${resolved.displayName} Live Weather"
                 }
                 val snippet = if (language == SathiLanguage.BN) {
-                    "অবস্থা: $condBn • তাপমাত্রা: ${temp}°C (অনুভূত ${feels}°C), আর্দ্রতা: ${humidity}%, বাতাস: ${wind} km/h।"
+                    "অবস্থা: $condBn • তাপমাত্রা: ${temp}°C (অনুভূত ${feels}°C)$rangeBn, আর্দ্রতা: ${humidity}%, বাতাস: ${wind} km/h।"
                 } else {
-                    "Condition: $condEn • Temp: ${temp}°C (feels ${feels}°C), Humidity: ${humidity}%, Wind: ${wind} km/h."
+                    "Condition: $condEn • Temp: ${temp}°C (feels ${feels}°C)$rangeEn, Humidity: ${humidity}%, Wind: ${wind} km/h."
                 }
                 WebSource(
                     title = title,

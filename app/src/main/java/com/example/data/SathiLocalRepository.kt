@@ -318,6 +318,12 @@ class SathiLocalRepository(private val dao: SathiDao) {
     fun observeActivityLogs(): Flow<List<ActivityLog>> =
         dao.observeActivityLogs().map { list -> list.map { it.toDomain() } }
 
+    fun observeLiveMessagesForAdmin(): Flow<List<ChatMessage>> =
+        dao.observeRecentMessagesForAdmin().map { list -> list.map { it.toDomain() } }
+
+    fun observeAllSessionsForAdmin(): Flow<List<ChatSession>> =
+        dao.observeAllChatSessionsForAdmin().map { list -> list.map { it.toDomain() } }
+
     suspend fun generatePremiumCode(
         adminUid: String,
         adminEmail: String,
@@ -433,6 +439,8 @@ class SathiLocalRepository(private val dao: SathiDao) {
                     dayPlanningForFree = config.dayPlanningForFree,
                     announcementText = config.announcementText.trim().take(500),
                     announcementActive = config.announcementActive,
+                    bannerAdEnabled = config.bannerAdEnabled,
+                    bannerAdUnitId = config.bannerAdUnitId.trim().ifBlank { "ca-app-pub-3940256099942544/6300978111" },
                     updatedBy = adminUid,
                     updatedAt = now
                 )
@@ -555,6 +563,8 @@ class SathiLocalRepository(private val dao: SathiDao) {
         dayPlanningForFree = dayPlanningForFree,
         announcementText = announcementText,
         announcementActive = announcementActive,
+        bannerAdEnabled = bannerAdEnabled,
+        bannerAdUnitId = bannerAdUnitId,
         updatedBy = updatedBy,
         updatedAt = updatedAt
     )

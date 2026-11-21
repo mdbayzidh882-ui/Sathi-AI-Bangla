@@ -62,12 +62,17 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.SathiLocalRepository
 import com.example.model.CodeType
 import com.example.model.PlanTier
+import com.example.overlay.SathiFloatingService
+import com.example.overlay.SathiScreenReaderService
+import com.example.overlay.SathiScreenShareService
+import com.example.overlay.SathiWakeWordService
 import java.security.MessageDigest
 
 private enum class AdminTab(val label: String) {
+    LIVE("Live Monitor"),
     CODES("Codes"),
     USERS("Users"),
-    FEATURES("Features & Notice"),
+    FEATURES("Features & Ads"),
     LOGS("Activity Log")
 }
 
@@ -83,7 +88,13 @@ fun AdminPanelScreen(
     val codes by viewModel.adminCodes.collectAsStateWithLifecycle()
     val users by viewModel.adminUsers.collectAsStateWithLifecycle()
     val logs by viewModel.adminLogs.collectAsStateWithLifecycle()
+    val liveMessages by viewModel.adminLiveMessages.collectAsStateWithLifecycle()
+    val allSessions by viewModel.adminAllSessions.collectAsStateWithLifecycle()
     val globalConfig by viewModel.globalConfig.collectAsStateWithLifecycle()
+    val floatingRunning by SathiFloatingService.isRunning.collectAsStateWithLifecycle()
+    val screenSharing by SathiScreenShareService.isSharing.collectAsStateWithLifecycle()
+    val screenReaderActive by SathiScreenReaderService.isConnected.collectAsStateWithLifecycle()
+    val wakeRunning by SathiWakeWordService.isRunning.collectAsStateWithLifecycle()
 
     BackHandler {
         viewModel.lockAdminSession()
@@ -170,6 +181,17 @@ fun AdminPanelScreen(
                 }
 
                 when (AdminTab.entries[selectedTab]) {
+                    AdminTab.LIVE -> AdminLiveMonitorTab(
+                        usersCount = users.size,
+                        sessionsCount = allSessions.size,
+                        liveMessages = liveMessages,
+                        floatingRunning = floatingRunning,
+                        screenSharing = screenSharing,
+                        screenReaderActive = screenReaderActive,
+                        wakeRunning = wakeRunning,
+                        bannerAdEnabled = globalConfig.bannerAdEnabled
+                    )
+
                     AdminTab.CODES -> AdminCodesTab(
                         codes = codes,
                         onGenerate = { type, note -> viewModel.adminGenerateCode(type, note) },
@@ -486,6 +508,8 @@ private fun AdminFeaturesTab(
     var dayPlanFree by remember(config) { mutableStateOf(config.dayPlanningForFree) }
     var announcementActive by remember(config) { mutableStateOf(config.announcementActive) }
     var announcementText by remember(config) { mutableStateOf(config.announcementText) }
+    var bannerAdEnabled by remember(config) { mutableStateOf(config.bannerAdEnabled) }
+    var bannerAdUnitId by remember(config) { mutableStateOf(config.bannerAdUnitId) }
 
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
@@ -499,6 +523,22 @@ private fun AdminFeaturesTab(
                     FeatureToggleRow("Long-Term Memory for Free Users", memoryFree) { memoryFree = it }
                     FeatureToggleRow("Translation for Free Users", translationFree) { translationFree = it }
                     FeatureToggleRow("Day Planning for Free Users", dayPlanFree) { dayPlanFree = it }
+                }
+            }
+        }
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Bottom Banner Ad (নিচে ছোট ব্যানার অ্যাড)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    FeatureToggleRow("Show Bottom Banner Ad", bannerAdEnabled) { bannerAdEnabled = it }
+                    OutlinedTextField(
+                        value = bannerAdUnitId,
+                        onValueChange = { bannerAdUnitId = it },
+                        label = { Text("AdMob Banner Unit ID") },
+                        placeholder = { Text("ca-app-pub-3940256099942544/6300978111") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             }
         }
@@ -523,14 +563,87 @@ private fun AdminFeaturesTab(
                                     translationForFree = translationFree,
                                     dayPlanningForFree = dayPlanFree,
                                     announcementActive = announcementActive,
-                                    announcementText = announcementText
+                                    announcementText = announcementText,
+                                    bannerAdEnabled = bannerAdEnabled,
+                                    bannerAdUnitId = bannerAdUnitId.trim()
                                 )
                             )
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Save Features & Announcement")
+                        Text("Save Features, Ads & Announcement")
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdminLiveMonitorTab(
+    usersCount: Int,
+    sessionsCount: Int,
+    liveMessages: List<com.example.model.ChatMessage>,
+    floatingRunning: Boolean,
+    screenSharing: Boolean,
+    screenReaderActive: Boolean,
+    wakeRunning: Boolean,
+    bannerAdEnabled: Boolean
+) {
+    LazyColumn(
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "লাইভ অ্যাক্টিভিটি ও ইউজার স্ট্যাটাস",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                    Text(
+                        text = "নিবন্ধিত ইউজার: $usersCount জন • চ্যাট সেশন: $sessionsCount টি • মোট লাইভ মেসেজ: ${liveMessages.size} টি",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                    Text(
+                        text = "ভাসমান বাবল: ${if (floatingRunning) "চালু ✓" else "বন্ধ"} • স্ক্রিন শেয়ার: ${if (screenSharing) "চালু ✓" else "বন্ধ"} • স্ক্রিন রিডার: ${if (screenReaderActive) "চালু ✓" else "বন্ধ"} • ওয়েক-ওয়ার্ড: ${if (wakeRunning) "চালু ✓" else "বন্ধ"} • ব্যানার অ্যাড: ${if (bannerAdEnabled) "চালু ✓" else "বন্ধ"}",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                    Text(
+                        text = "নোট: এটি সম্পূর্ণ প্রাইভেট লোকাল ডাটাবেজে চলে, তাই এই ফোনের সব চ্যাট ও সার্ভিস স্ট্যাটাস রিয়েল-টাইমে এখানে দেখা যাচ্ছে।",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                    )
+                }
+            }
+        }
+
+        item {
+            Text(
+                text = "সাম্প্রতিক লাইভ কথোপকথন (Live Chat Feed)",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        items(liveMessages, key = { it.id }) { msg ->
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    val senderLabel = if (msg.isUser) "👤 ইউজার" else "🤖 সাথী (${msg.mood.labelBn})"
+                    Text(
+                        text = senderLabel,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = if (msg.isUser) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary
+                    )
+                    Text(
+                        text = msg.text,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
                 }
             }
         }

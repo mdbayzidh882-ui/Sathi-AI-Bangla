@@ -33,10 +33,13 @@ import com.example.model.PremiumCode
 import com.example.model.SathiLanguage
 import com.example.model.SathiMood
 import com.example.model.SathiVoiceProfile
+import com.example.model.UserEmotion
 import com.example.model.UserMemory
 import com.example.model.UserProfile
 import com.example.model.WebSource
+import com.example.overlay.SathiScreenReaderService
 import com.example.overlay.SathiScreenShareService
+import com.example.overlay.SathiWakeWordService
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -154,6 +157,15 @@ class SathiViewModel(
     private val _adminLogs = MutableStateFlow<List<ActivityLog>>(emptyList())
     val adminLogs: StateFlow<List<ActivityLog>> = _adminLogs.asStateFlow()
 
+    private val _selectedUserEmotion = MutableStateFlow<UserEmotion?>(null)
+    val selectedUserEmotion: StateFlow<UserEmotion?> = _selectedUserEmotion.asStateFlow()
+
+    private val _adminLiveMessages = MutableStateFlow<List<ChatMessage>>(emptyList())
+    val adminLiveMessages: StateFlow<List<ChatMessage>> = _adminLiveMessages.asStateFlow()
+
+    private val _adminAllSessions = MutableStateFlow<List<ChatSession>>(emptyList())
+    val adminAllSessions: StateFlow<List<ChatSession>> = _adminAllSessions.asStateFlow()
+
     private val _offlineDownloadStatus = MutableStateFlow("")
     val offlineDownloadStatus: StateFlow<String> = _offlineDownloadStatus.asStateFlow()
 
@@ -163,6 +175,11 @@ class SathiViewModel(
 
     init {
         viewModelScope.launch {
+            launch {
+                preferences.settingsFlow.collect { settings ->
+                    voiceController.setAutoVoiceEnabled(settings.autoVoiceEnabled)
+                }
+            }
             repository.ensureUserProfile(currentUserId, displayName, userEmail)
             _isOwnerAdmin.value = repository.isUserAdminDocPresent()
             val existingSessions = repository.observeChatSessions(currentUserId).first()
@@ -247,6 +264,73 @@ class SathiViewModel(
 
     fun toggleLiveMute() {
         voiceController.toggleMute()
+    }
+
+    fun setAutoVoiceEnabled(enabled: Boolean) {
+        voiceController.setAutoVoiceEnabled(enabled)
+        viewModelScope.launch {
+            preferences.setAutoVoiceEnabled(enabled)
+        }
+    }
+
+    fun setWakeWordEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            preferences.setWakeWordEnabled(enabled)
+        }
+    }
+
+    fun interruptSpeakingAndListen() {
+        voiceController.interruptAndListen(currentLanguage(), isUsingOfflineMode())
+    }
+
+    fun onWakeWordTriggered() {
+        val lang = currentLanguage()
+        val offline = isUsingOfflineMode()
+        voiceController.startListeningAfterWake(lang, offline)
+        _bannerState.value = UiBannerState.Info(
+            if (lang == SathiLanguage.BN) "সাথী জেগে উঠেছে! বলুন, আমি শুনছি..."
+            else "Sathi is awake and listening!"
+        )
+    }
+
+    fun selectUserEmotion(emotion: UserEmotion) {
+        _selectedUserEmotion.value = emotion
+        _activeMood.value = emotion.sathiMood
+        val lang = currentLanguage()
+        val voice = currentVoice()
+        val name = userProfile.value?.userName?.ifBlank { displayName } ?: displayName.ifBlank { "বন্ধু" }
+        val reply = if (lang == SathiLanguage.BN) {
+            when (emotion) {
+                UserEmotion.HAPPY -> "${emotion.emoji} আলহামদুলিল্লাহ $name! আপনাকে হাসিখুশি দেখে আমারও ভীষণ ভালো লাগছে। আজ আনন্দটা কীভাবে উদযাপন করবেন?"
+                UserEmotion.SAD -> "${emotion.emoji} $name, বুঝতে পারছি আপনার মনটা একটু খারাপ। মন খুলে আমাকে বলুন কী হয়েছে—আমি সবসময় আপনার পাশেই আছি।"
+                UserEmotion.ANGRY -> "${emotion.emoji} একটু থেমে গভীর শ্বাস নিন $name। আপনার বিরক্তি বা রাগের কথা আমাকে বললে মনটা হালকা লাগবে।"
+                UserEmotion.ANXIOUS -> "${emotion.emoji} একদম দুশ্চিন্তা করবেন না $name। যেকোনো কঠিন সমস্যা আমরা ধাপে ধাপে একসাথে সমাধান করব।"
+                UserEmotion.TIRED -> "${emotion.emoji} আজ অনেক পরিশ্রম হয়েছে তাই না $name? একটু বিশ্রাম নিন আর হালকা পানি পান করুন, আমি পাশে আছি।"
+                UserEmotion.LOVING -> "${emotion.emoji} আপনার সুন্দর মনের জন্য অনেক ভালোবাসা $name! আজ আপনার জন্য কী করতে পারি?"
+            }
+        } else {
+            when (emotion) {
+                UserEmotion.HAPPY -> "${emotion.emoji} Seeing you happy makes my day brighter, $name! What good news brought this smile?"
+                UserEmotion.SAD -> "${emotion.emoji} I'm right here beside you, $name. You don't have to carry sadness alone—tell me what's on your heart."
+                UserEmotion.ANGRY -> "${emotion.emoji} Pause for a slow breath, $name. Feel free to vent to me—no judgment, only care."
+                UserEmotion.ANXIOUS -> "${emotion.emoji} Let's take it one calm step at a time, $name. Tell me what's worrying you."
+                UserEmotion.TIRED -> "${emotion.emoji} You sound really tired, $name. Rest your eyes for a bit—I'm keeping watch with you."
+                UserEmotion.LOVING -> "${emotion.emoji} So much warmth and gratitude right back to you, $name! How can I help today?"
+            }
+        }
+        val aiMsg = ChatMessage(
+            id = UUID.randomUUID().toString(),
+            isUser = false,
+            text = reply,
+            mood = emotion.sathiMood
+        )
+        _messages.value = _messages.value + aiMsg
+        viewModelScope.launch {
+            val sid = ensureActiveSessionWithTitle("${emotion.emoji} ${emotion.labelBn}")
+            repository.upsertChatMessage(currentUserId, sid, aiMsg)
+        }
+        startStreamingReveal(aiMsg.id, reply)
+        voiceController.speak(reply, lang, voice, emotion.sathiMood)
     }
 
     fun saveCustomGeminiApiKey(apiKey: String) {
@@ -390,21 +474,25 @@ class SathiViewModel(
         viewModelScope.launch {
             try {
                 val frame = SathiScreenShareService.captureLatestFrame()
-                if (frame == null) {
+                val screenContext = SathiScreenReaderService.formatScreenContextSummary()
+                if (frame == null && screenContext.isBlank()) {
                     val errText = if (lang == SathiLanguage.BN) {
-                        "এখন স্ক্রিনের ছবি পাওয়া যায়নি। '+' বাটন থেকে স্ক্রিন শেয়ার চালু করে আবার চেষ্টা করুন।"
+                        "এখন স্ক্রিনের তথ্য পাওয়া যায়নি। '+' বাটন থেকে স্ক্রিন শেয়ার অথবা সেটিংস থেকে স্ক্রিন রিডার চালু করুন।"
                     } else {
-                        "Could not capture a frame yet. Make sure Screen Share is active via + and try again."
+                        "Could not capture screen data yet. Enable Screen Share via + or Screen Reader in Settings."
                     }
                     appendSathiErrorReply(errText, lang, voice, speakReply = true)
                     return@launch
                 }
-                val thumb = Bitmap.createScaledBitmap(
-                    frame,
-                    240,
-                    (240f * frame.height / frame.width.coerceAtLeast(1)).toInt().coerceAtLeast(160),
-                    true
-                )
+
+                val thumb = frame?.let {
+                    Bitmap.createScaledBitmap(
+                        it,
+                        240,
+                        (240f * it.height / it.width.coerceAtLeast(1)).toInt().coerceAtLeast(160),
+                        true
+                    )
+                }
                 val userMsg = ChatMessage(
                     id = UUID.randomUUID().toString(),
                     isUser = true,
@@ -415,9 +503,24 @@ class SathiViewModel(
                 _messages.value = _messages.value + userMsg
                 val sid = ensureActiveSessionWithTitle(promptLabel)
                 repository.upsertChatMessage(currentUserId, sid, userMsg)
-                val res = aiService.analyzeImage(frame, question, lang, isScreenCapture = true, apiKey = apiKey)
-                val reply = res.getOrElse {
-                    if (lang == SathiLanguage.BN) "স্ক্রিনটি বিশ্লেষণ করা যায়নি।" else "Could not analyze screen."
+
+                val reply = if (frame != null) {
+                    aiService.analyzeImage(
+                        bitmap = frame,
+                        question = question,
+                        language = lang,
+                        isScreenCapture = true,
+                        apiKey = apiKey,
+                        screenTextContext = screenContext
+                    ).getOrElse {
+                        if (lang == SathiLanguage.BN) "স্ক্রিনটি বিশ্লেষণ করা যায়নি।" else "Could not analyze screen."
+                    }
+                } else {
+                    if (lang == SathiLanguage.BN) {
+                        "আমি আপনার ফোনের লাইভ স্ক্রিন থেকে যা দেখছি:\n\n$screenContext"
+                    } else {
+                        "Here is what I see on your live phone screen:\n\n$screenContext"
+                    }
                 }
                 val aiMsg = ChatMessage(
                     id = UUID.randomUUID().toString(),
@@ -474,7 +577,17 @@ class SathiViewModel(
 
     fun sendUserMessage(rawText: String, speakReply: Boolean = true) {
         val text = rawText.trim()
-        if (text.isEmpty() || _isThinking.value) return
+        if (text.isEmpty()) return
+
+        val lowerPre = text.lowercase()
+        if (lowerPre.startsWith("থামো") || lowerPre.startsWith("চুপ") || lowerPre.startsWith("stop")) {
+            voiceController.stopSpeaking()
+        }
+        if (SathiWakeWordService.matchesTripleSathi(text)) {
+            onWakeWordTriggered()
+            return
+        }
+        if (_isThinking.value) return
 
         val profile = userProfile.value
         if (profile?.banned == true) {
@@ -525,12 +638,14 @@ class SathiViewModel(
                     return@launch
                 }
 
-                // If live Screen Share is active and user asks about what's on screen, analyze live screen frame
+                // If live Screen Share or Accessibility Screen Reader is active and user asks about screen, include full screen data
                 val lowerText = text.lowercase()
-                if (SathiScreenShareService.isSharing.value &&
+                val screenContext = SathiScreenReaderService.formatScreenContextSummary()
+                if ((SathiScreenShareService.isSharing.value || screenContext.isNotBlank()) &&
                     (lowerText.contains("স্ক্রিন") || lowerText.contains("screen") ||
                         lowerText.contains("এটা কী") || lowerText.contains("এখানে কী") ||
-                        lowerText.contains("পড়ে শোনা") || lowerText.contains("পড়ে শোনা"))
+                        lowerText.contains("পড়ে শোনা") || lowerText.contains("পড়ে শোনা") ||
+                        lowerText.contains("কোন অ্যাপ"))
                 ) {
                     val frame = SathiScreenShareService.captureLatestFrame()
                     if (frame != null) {
@@ -539,7 +654,8 @@ class SathiViewModel(
                             question = text,
                             language = lang,
                             isScreenCapture = true,
-                            apiKey = settings.customGeminiApiKey
+                            apiKey = settings.customGeminiApiKey,
+                            screenTextContext = screenContext
                         ).getOrElse {
                             if (lang == SathiLanguage.BN) "স্ক্রিনটি পড়া যায়নি।" else "Could not read screen."
                         }
@@ -556,12 +672,32 @@ class SathiViewModel(
                             voiceController.speak(analysis, lang, voice, SathiMood.WARM)
                         }
                         return@launch
+                    } else if (screenContext.isNotBlank()) {
+                        val reply = if (lang == SathiLanguage.BN) {
+                            "বর্তমান স্ক্রিনে যা দেখা যাচ্ছে:\n\n$screenContext"
+                        } else {
+                            "Currently visible on your phone screen:\n\n$screenContext"
+                        }
+                        val aiMsg = ChatMessage(
+                            id = UUID.randomUUID().toString(),
+                            isUser = false,
+                            text = reply,
+                            mood = SathiMood.WARM
+                        )
+                        _messages.value = _messages.value + aiMsg
+                        repository.upsertChatMessage(currentUserId, sid, aiMsg)
+                        startStreamingReveal(aiMsg.id, reply)
+                        if (speakReply) {
+                            voiceController.speak(reply, lang, voice, SathiMood.WARM)
+                        }
+                        return@launch
                     }
                 }
 
                 // Online Companion AI Engine
                 val allowMemory = (profile?.hasPremiumAccess() == true) || globalConfig.value.longTermMemoryForFree
                 val recentHistory = _messages.value.takeLast(8).map { it.isUser to it.text }
+                val activeEmotion = _selectedUserEmotion.value
 
                 val initialResult = aiService.generateCompanionReply(
                     userMessage = text,
@@ -571,7 +707,8 @@ class SathiViewModel(
                     recentHistory = recentHistory,
                     webSources = emptyList(),
                     allowLongTermMemory = allowMemory,
-                    apiKey = settings.customGeminiApiKey
+                    apiKey = settings.customGeminiApiKey,
+                    userEmotion = activeEmotion
                 )
 
                 val turn = initialResult.getOrElse { err ->
@@ -593,7 +730,8 @@ class SathiViewModel(
                             recentHistory = recentHistory,
                             webSources = sources,
                             allowLongTermMemory = allowMemory,
-                            apiKey = settings.customGeminiApiKey
+                            apiKey = settings.customGeminiApiKey,
+                            userEmotion = activeEmotion
                         ).getOrElse { turn }
                         handleTurnOutput(groundedResult, sources, isOffline = false, speakReply = speakReply, lang = lang, voice = voice, sessionId = sid)
                     } else {
@@ -697,6 +835,11 @@ class SathiViewModel(
         val outcome = when (pending.type) {
             PhoneActionType.CALL_CONFIRM -> deviceActions.executeConfirmedCall(pending.target, lang)
             PhoneActionType.SMS_CONFIRM -> deviceActions.executeConfirmedSms(pending.target, pending.messageBody, lang)
+            PhoneActionType.SOCIAL_MESSAGE_CONFIRM -> deviceActions.executeConfirmedSocialMessage(
+                platform = pending.extraParam.ifBlank { pending.target },
+                messageBody = pending.messageBody,
+                language = lang
+            )
             else -> ActionOutcome.Executed("")
         }
         when (outcome) {
@@ -1014,6 +1157,16 @@ class SathiViewModel(
                 repository.observeActivityLogs()
                     .catch { emit(emptyList()) }
                     .collect { _adminLogs.value = it }
+            }
+            launch {
+                repository.observeLiveMessagesForAdmin()
+                    .catch { emit(emptyList()) }
+                    .collect { _adminLiveMessages.value = it }
+            }
+            launch {
+                repository.observeAllSessionsForAdmin()
+                    .catch { emit(emptyList()) }
+                    .collect { _adminAllSessions.value = it }
             }
         }
     }

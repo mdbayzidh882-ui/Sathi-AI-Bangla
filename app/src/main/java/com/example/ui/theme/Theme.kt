@@ -68,9 +68,9 @@ fun sathiHorizonBackgroundBrush(darkTheme: Boolean = isSystemInDarkTheme()): Bru
         Brush.verticalGradient(
             colorStops = arrayOf(
                 0.00f to SathiTopYellowDark,
-                0.28f to SathiUpperYellowPullDark,
-                0.52f to SathiMiddleBlendDark,
-                0.78f to SathiLowerBluePullDark,
+                0.24f to SathiUpperYellowPullDark,
+                0.48f to SathiMiddleBlendDark,
+                0.76f to SathiLowerBluePullDark,
                 1.00f to SathiBottomBlueDark
             )
         )
@@ -78,9 +78,9 @@ fun sathiHorizonBackgroundBrush(darkTheme: Boolean = isSystemInDarkTheme()): Bru
         Brush.verticalGradient(
             colorStops = arrayOf(
                 0.00f to SathiTopYellowLight,
-                0.26f to SathiUpperYellowPullLight,
-                0.52f to SathiMiddleBlendLight,
-                0.78f to SathiLowerBluePullLight,
+                0.24f to SathiUpperYellowPullLight,
+                0.50f to SathiMiddleBlendLight,
+                0.76f to SathiLowerBluePullLight,
                 1.00f to SathiBottomBlueLight
             )
         )

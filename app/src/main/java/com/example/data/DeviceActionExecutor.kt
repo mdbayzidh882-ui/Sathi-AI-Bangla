@@ -1,5 +1,7 @@
 package com.example.data
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -8,6 +10,7 @@ import android.media.AudioManager
 import android.net.Uri
 import android.provider.AlarmClock
 import android.provider.CalendarContract
+import android.provider.Settings
 import com.example.model.PendingConfirmation
 import com.example.model.PhoneActionType
 import com.example.model.SathiLanguage
@@ -51,6 +54,14 @@ class DeviceActionExecutor(context: Context) {
                     secondary
                 )
             )
+            PhoneActionType.SOCIAL_MESSAGE_CONFIRM -> ActionOutcome.NeedsConfirmation(
+                PendingConfirmation(
+                    type = PhoneActionType.SOCIAL_MESSAGE_CONFIRM,
+                    target = param.ifBlank { "WhatsApp" },
+                    messageBody = secondary,
+                    extraParam = param.lowercase()
+                )
+            )
         }
     }
 
@@ -65,7 +76,7 @@ class DeviceActionExecutor(context: Context) {
             ActionOutcome.Executed(
                 if (language == SathiLanguage.BN) "ডায়ালার খোলা হয়েছে" else "Opened Dialer"
             )
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             ActionOutcome.Failed(
                 if (language == SathiLanguage.BN) "কল স্ক্রিন খোলা যায়নি।" else "Could not open phone dialer."
             )
@@ -83,10 +94,94 @@ class DeviceActionExecutor(context: Context) {
             ActionOutcome.Executed(
                 if (language == SathiLanguage.BN) "মেসেজ অ্যাপ খোলা হয়েছে" else "Opened Messages"
             )
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             ActionOutcome.Failed(
                 if (language == SathiLanguage.BN) "মেসেজ অ্যাপ পাওয়া যায়নি।" else "Could not open messaging app."
             )
+        }
+    }
+
+    fun executeConfirmedSocialMessage(
+        platform: String,
+        messageBody: String,
+        language: SathiLanguage
+    ): ActionOutcome {
+        val lower = platform.lowercase()
+        val textToSend = messageBody.trim()
+
+        // Always copy drafted text to clipboard so pasting as a comment/reply takes 1 tap
+        if (textToSend.isNotBlank()) {
+            try {
+                val cm = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("Sathi Draft", textToSend))
+            } catch (_: Exception) {
+            }
+        }
+
+        val targetPackages = when {
+            lower.contains("whatsapp") || lower.contains("হোয়াটস") || lower.contains("হোয়াটস") ->
+                listOf("com.whatsapp", "com.whatsapp.w4b")
+            lower.contains("messenger") || lower.contains("মেসেঞ্জার") ->
+                listOf("com.facebook.orca", "com.facebook.mlite")
+            lower.contains("facebook") || lower.contains("ফেসবুক") ->
+                listOf("com.facebook.katana", "com.facebook.lite")
+            lower.contains("instagram") || lower.contains("ইনস্টাগ্রাম") ->
+                listOf("com.instagram.android")
+            lower.contains("tiktok") || lower.contains("টিকটক") ->
+                listOf("com.zhiliaoapp.musically", "com.ss.android.ugc.trill")
+            else -> listOf("com.whatsapp", "com.facebook.orca")
+        }
+
+        val pm = appContext.packageManager
+        val installedPkg = targetPackages.firstOrNull { pkg ->
+            pm.getLaunchIntentForPackage(pkg) != null
+        }
+
+        // Direct Share Intent works natively for WhatsApp & Messenger!
+        if (installedPkg != null && (installedPkg.contains("whatsapp") || installedPkg.contains("orca") || installedPkg.contains("mlite"))) {
+            try {
+                val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, textToSend)
+                    setPackage(installedPkg)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                appContext.startActivity(sendIntent)
+                return ActionOutcome.Executed(
+                    if (language == SathiLanguage.BN) "$platform-এ লেখা প্রস্তুত করে পাঠানো হয়েছে (ক্লিপবোর্ডেও কপি আছে)।"
+                    else "Opened $platform with your message ready."
+                )
+            } catch (_: Exception) {
+            }
+        }
+
+        if (installedPkg != null) {
+            pm.getLaunchIntentForPackage(installedPkg)?.let { launch ->
+                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                appContext.startActivity(launch)
+                return ActionOutcome.Executed(
+                    if (language == SathiLanguage.BN) "$platform খোলা হয়েছে ও লেখাটি কপি করা হয়েছে — কমেন্ট বক্সে পেস্ট করুন।"
+                    else "Opened $platform and copied your text — paste it into the comment box."
+                )
+            }
+        }
+
+        // Fallback to Share Chooser or open web app
+        return try {
+            val chooser = Intent.createChooser(
+                Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, textToSend)
+                },
+                if (language == SathiLanguage.BN) "মেসেজ বা কমেন্ট পাঠান" else "Send message or comment"
+            ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+            appContext.startActivity(chooser)
+            ActionOutcome.Executed(
+                if (language == SathiLanguage.BN) "শেয়ার অপশন খোলা হয়েছে (লেখা কপি করা আছে)"
+                else "Opened share sheet (text copied)"
+            )
+        } catch (_: Exception) {
+            openInstalledApp(platform, language)
         }
     }
 
@@ -217,17 +312,138 @@ class DeviceActionExecutor(context: Context) {
         }
     }
 
+    private data class KnownAppAlias(
+        val keywords: List<String>,
+        val packages: List<String>,
+        val webFallback: String?,
+        val displayBn: String,
+        val displayEn: String
+    )
+
+    private val knownApps = listOf(
+        KnownAppAlias(
+            keywords = listOf("youtube", "ইউটিউব"),
+            packages = listOf("com.google.android.youtube"),
+            webFallback = "https://www.youtube.com",
+            displayBn = "ইউটিউব",
+            displayEn = "YouTube"
+        ),
+        KnownAppAlias(
+            keywords = listOf("facebook", "ফেসবুক", "ফেসবুকে", "fb"),
+            packages = listOf("com.facebook.katana", "com.facebook.lite"),
+            webFallback = "https://m.facebook.com",
+            displayBn = "ফেসবুক",
+            displayEn = "Facebook"
+        ),
+        KnownAppAlias(
+            keywords = listOf("instagram", "ইনস্টাগ্রাম", "ইন্সটাগ্রাম", "insta"),
+            packages = listOf("com.instagram.android"),
+            webFallback = "https://www.instagram.com",
+            displayBn = "ইনস্টাগ্রাম",
+            displayEn = "Instagram"
+        ),
+        KnownAppAlias(
+            keywords = listOf("tiktok", "টিকটক"),
+            packages = listOf("com.zhiliaoapp.musically", "com.ss.android.ugc.trill"),
+            webFallback = "https://www.tiktok.com",
+            displayBn = "টিকটক",
+            displayEn = "TikTok"
+        ),
+        KnownAppAlias(
+            keywords = listOf("messenger", "মেসেঞ্জার", "ম্যাসেঞ্জার"),
+            packages = listOf("com.facebook.orca", "com.facebook.mlite"),
+            webFallback = "https://www.messenger.com",
+            displayBn = "মেসেঞ্জার",
+            displayEn = "Messenger"
+        ),
+        KnownAppAlias(
+            keywords = listOf("whatsapp", "হোয়াটসঅ্যাপ", "হোয়াটসঅ্যাপ", "হোয়াটস", "হোয়াটস"),
+            packages = listOf("com.whatsapp", "com.whatsapp.w4b"),
+            webFallback = "https://web.whatsapp.com",
+            displayBn = "হোয়াটসঅ্যাপ",
+            displayEn = "WhatsApp"
+        ),
+        KnownAppAlias(
+            keywords = listOf("chrome", "ক্রোম", "ব্রাউজার", "browser"),
+            packages = listOf("com.android.chrome"),
+            webFallback = "https://www.google.com",
+            displayBn = "ক্রোম",
+            displayEn = "Chrome"
+        ),
+        KnownAppAlias(
+            keywords = listOf("maps", "google maps", "ম্যাপ", "মানচিত্র"),
+            packages = listOf("com.google.android.apps.maps"),
+            webFallback = "https://maps.google.com",
+            displayBn = "গুগল ম্যাপস",
+            displayEn = "Google Maps"
+        ),
+        KnownAppAlias(
+            keywords = listOf("gmail", "জিমেইল", "ইমেইল"),
+            packages = listOf("com.google.android.gm"),
+            webFallback = "https://mail.google.com",
+            displayBn = "জিমেইল",
+            displayEn = "Gmail"
+        ),
+        KnownAppAlias(
+            keywords = listOf("play store", "প্লে স্টোর", "প্লেস্টোর"),
+            packages = listOf("com.android.vending"),
+            webFallback = "https://play.google.com/store",
+            displayBn = "প্লে স্টোর",
+            displayEn = "Play Store"
+        )
+    )
+
     private fun openInstalledApp(appQuery: String, language: SathiLanguage): ActionOutcome {
         return try {
             val pm = appContext.packageManager
+            val queryLower = appQuery.lowercase().trim()
+
+            // 1. Settings shortcut
+            if (queryLower.contains("setting") || queryLower.contains("সেটিং")) {
+                appContext.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                return ActionOutcome.Executed(if (language == SathiLanguage.BN) "সেটিংস খোলা হয়েছে" else "Opened Settings")
+            }
+
+            // 2. Known popular apps (YouTube, Facebook, Instagram, TikTok, Messenger, WhatsApp, etc.)
+            val known = knownApps.firstOrNull { alias ->
+                alias.keywords.any { kw -> queryLower.contains(kw) }
+            }
+            if (known != null) {
+                for (pkg in known.packages) {
+                    val launch = pm.getLaunchIntentForPackage(pkg)?.apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    if (launch != null) {
+                        appContext.startActivity(launch)
+                        val label = if (language == SathiLanguage.BN) known.displayBn else known.displayEn
+                        return ActionOutcome.Executed(
+                            if (language == SathiLanguage.BN) "$label খোলা হয়েছে" else "Opened $label"
+                        )
+                    }
+                }
+                if (!known.webFallback.isNullOrBlank()) {
+                    val webIntent = Intent(Intent.ACTION_VIEW, Uri.parse(known.webFallback)).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    appContext.startActivity(webIntent)
+                    val label = if (language == SathiLanguage.BN) known.displayBn else known.displayEn
+                    return ActionOutcome.Executed(
+                        if (language == SathiLanguage.BN) "$label অ্যাপ ইনস্টল না থাকায় ওয়েবে খোলা হয়েছে"
+                        else "Opened $label in browser"
+                    )
+                }
+            }
+
+            // 3. Dynamic scan across ALL launcher apps installed on the phone
             val mainIntent = Intent(Intent.ACTION_MAIN, null).apply {
                 addCategory(Intent.CATEGORY_LAUNCHER)
             }
             val apps = pm.queryIntentActivities(mainIntent, PackageManager.MATCH_ALL)
-            val queryLower = appQuery.lowercase().trim()
             val match = apps.firstOrNull { info ->
                 val label = info.loadLabel(pm).toString().lowercase()
-                label.contains(queryLower) || info.activityInfo.packageName.lowercase().contains(queryLower)
+                label.contains(queryLower) ||
+                    queryLower.contains(label) ||
+                    info.activityInfo.packageName.lowercase().contains(queryLower)
             }
             if (match != null) {
                 val launch = pm.getLaunchIntentForPackage(match.activityInfo.packageName)?.apply {
