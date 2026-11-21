@@ -17,6 +17,7 @@ import com.google.mlkit.vision.label.ImageLabeling
 import com.google.mlkit.vision.label.defaults.ImageLabelerOptions
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import java.io.ByteArrayOutputStream
 import java.net.URLEncoder
 import java.util.Calendar
 import java.util.Locale
@@ -26,8 +27,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
 
 data class SathiTurnResult(
@@ -39,7 +43,8 @@ data class SathiTurnResult(
     val shouldSaveMemory: Boolean,
     val memoryCategory: MemoryCategory,
     val memoryTitle: String,
-    val memoryContent: String
+    val memoryContent: String,
+    val groundedSources: List<WebSource> = emptyList()
 )
 
 data class VideoAnalysisOutcome(
@@ -55,8 +60,8 @@ class SathiAiService {
 
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(12, TimeUnit.SECONDS)
+            .connectTimeout(12, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
             .build()
     }
 
@@ -67,34 +72,14 @@ class SathiAiService {
         memories: List<UserMemory>,
         recentHistory: List<Pair<Boolean, String>>,
         webSources: List<WebSource> = emptyList(),
-        allowLongTermMemory: Boolean = true
+        allowLongTermMemory: Boolean = true,
+        apiKey: String = ""
     ): Result<SathiTurnResult> {
         val text = userMessage.trim()
         val lower = text.lowercase()
 
-        // 1. If web search results were already gathered, summarize them naturally
-        if (webSources.isNotEmpty()) {
-            val top = webSources.first()
-            val extra = webSources.getOrNull(1)
-            val reply = if (language == SathiLanguage.BN) {
-                buildString {
-                    append("${top.title}: ${top.snippet}")
-                    if (extra != null && extra.snippet.isNotBlank()) {
-                        append("\nআরও খবর/তথ্য: ${extra.title} — ${extra.snippet.take(120)}")
-                    }
-                }
-            } else {
-                buildString {
-                    append("${top.title}: ${top.snippet}")
-                    if (extra != null && extra.snippet.isNotBlank()) {
-                        append("\nMore: ${extra.title} — ${extra.snippet.take(120)}")
-                    }
-                }
-            }
-            return Result.success(simpleTurn(reply, SathiMood.SERIOUS))
-        }
-
-        // 2. Creator identity rule (strictly enforced)
+        // 0. Always handle strict local rules first (creator, time, explicit device commands)
+        // Creator identity rule (strictly enforced)
         if (lower.contains("বানিয়ে") || lower.contains("বানাইছে") || lower.contains("তৈরি") ||
             lower.contains("who made") || lower.contains("created you") || lower.contains("creator") ||
             lower.contains("who built")
@@ -107,7 +92,7 @@ class SathiAiService {
             return Result.success(simpleTurn(reply, SathiMood.WARM))
         }
 
-        // 3. Sathi's own Name & Identity ("তোমার নাম কী?", "তুমি কে?", "What is your name?")
+        // Sathi's own Name & Identity
         if (lower.contains("তোমার নাম") || lower.contains("আপনার নাম") || lower.contains("তোর নাম") ||
             lower.contains("what is your name") || lower.contains("what's your name") || lower.contains("your name") ||
             lower.contains("who are you") ||
@@ -121,7 +106,34 @@ class SathiAiService {
             return Result.success(simpleTurn(reply, SathiMood.HAPPY))
         }
 
-        // 4. User's Name memory detection & recall
+        // Device Time / Date / Day (ALWAYS local & exact)
+        if (isTimeOrDateQuery(lower)) {
+            return Result.success(simpleTurn(formatCurrentTimeAndDate(language), SathiMood.WARM))
+        }
+
+        // 1. If web search results were already gathered, synthesize naturally
+        if (webSources.isNotEmpty()) {
+            val top = webSources.first()
+            val extra = webSources.getOrNull(1)
+            val reply = if (language == SathiLanguage.BN) {
+                buildString {
+                    append("${top.title}: ${top.snippet}")
+                    if (extra != null && extra.snippet.isNotBlank()) {
+                        append("\n\nআরও তথ্য: ${extra.title} — ${extra.snippet.take(150)}")
+                    }
+                }
+            } else {
+                buildString {
+                    append("${top.title}: ${top.snippet}")
+                    if (extra != null && extra.snippet.isNotBlank()) {
+                        append("\n\nMore: ${extra.title} — ${extra.snippet.take(150)}")
+                    }
+                }
+            }
+            return Result.success(simpleTurn(reply, SathiMood.SERIOUS))
+        }
+
+        // 2. User's Name memory detection & recall
         val bnNameMatch = Regex("আমার নাম\\s+(.+)").find(text)
         val enNameMatch = Regex("my name is\\s+(.+)", RegexOption.IGNORE_CASE).find(text)
         val extractedName = (bnNameMatch ?: enNameMatch)?.groupValues?.getOrNull(1)
@@ -157,11 +169,6 @@ class SathiAiService {
                 "Your name is $userName — I remember!"
             }
             return Result.success(simpleTurn(reply, SathiMood.HAPPY))
-        }
-
-        // 5. Device Time / Date / Day (ALWAYS local & exact — never send to web search!)
-        if (isTimeOrDateQuery(lower)) {
-            return Result.success(simpleTurn(formatCurrentTimeAndDate(language), SathiMood.WARM))
         }
 
         // 6. YouTube action
@@ -202,22 +209,41 @@ class SathiAiService {
             return Result.success(simpleTurn(poem, SathiMood.WARM))
         }
 
-        // 8. Quick Math Calculator
+        // 9. Quick Math Calculator
         tryEvaluateMath(text, language)?.let { mathReply ->
             return Result.success(simpleTurn(mathReply, SathiMood.SERIOUS))
         }
 
-        // 9. Genuine Web Search Intent (weather, news, scores, explicit search, or real factual questions)
+        // 10. If Optional Gemini API Key is configured, use full Gemini 2.5 Flash + Google Search grounding!
+        // Note: explicit device control commands (below) are checked first if the user triggers them clearly.
+        val isDeviceAction = isExplicitPhoneControl(lower)
+        if (!isDeviceAction && apiKey.isNotBlank()) {
+            callGeminiRestWithSearch(
+                apiKey = apiKey,
+                userMessage = text,
+                language = language,
+                userName = userName,
+                memories = memories,
+                recentHistory = recentHistory
+            )?.let { cloudTurn ->
+                return Result.success(cloudTurn)
+            }
+        }
+
+        // 11. Genuine Web Search Intent (weather, currency, news, scores, explicit search, or real factual questions)
         val isWeather = lower.contains("weather") || lower.contains("আবহাওয়া") || lower.contains("আবহাওয়া") ||
             lower.contains("তাপমাত্রা") || lower.contains("temperature") || lower.contains("বৃষ্টি")
+        val isCurrency = lower.contains("dollar") || lower.contains("usd") || lower.contains("euro") ||
+            lower.contains("riyal") || lower.contains("dirham") || lower.contains("ডলার") ||
+            lower.contains("রিয়াল") || lower.contains("রিয়াল") || lower.contains("দিরহাম")
         val isNewsOrScore = lower.contains("news") || lower.contains("খবর") || lower.contains("সংবাদ") ||
             lower.contains("score") || lower.contains("স্কোর") || lower.contains("ক্রিকেট") ||
             lower.contains("ফুটবল") || lower.contains("search") || lower.contains("খুঁজ") ||
             lower.contains("সার্চ") || lower.contains("গুগল")
-        val isFactualQuestion = Regex("^(what is|who is|who was|where is|when did|tell me about)\\b").containsMatchIn(lower) ||
-            Regex("(কে ছিলেন|কাকে বলে|রাজধানী|ইতিহাস|সম্পর্কে বলো|সম্পর্কে জানাও)").containsMatchIn(lower)
+        val isFactualQuestion = Regex("\\b(what is|who is|who was|where is|when did|how to|why is|explain|tell me about|capital of)\\b").containsMatchIn(lower) ||
+            Regex("(কে ছিলেন|কাকে বলে|রাজধানী|ইতিহাস|সম্পর্কে|কীভাবে|কিভাবে|কেন হয়|কেন হয়|দাম কত|কত টাকা)").containsMatchIn(lower)
 
-        if (isWeather || isNewsOrScore || isFactualQuestion) {
+        if (isWeather || isCurrency || isNewsOrScore || isFactualQuestion) {
             return Result.success(
                 simpleTurn(
                     reply = if (language == SathiLanguage.BN) "আমি তথ্য খুঁজে দেখছি..." else "Searching for live information...",
@@ -389,15 +415,32 @@ class SathiAiService {
             return Result.success(simpleTurn(reply, SathiMood.PLAYFUL))
         }
 
-        // 17. Natural, non-repetitive conversational replies (never pulls irrelevant Wikipedia noise!)
+        // 17. Multi-turn conversational continuity (remembers previous topic!)
+        val lastAiReply = recentHistory.lastOrNull { !it.first }?.second.orEmpty()
+        val lastUserMsg = recentHistory.lastOrNull { it.first }?.second.orEmpty()
+        if ((lower.contains("আরও") || lower.contains("আরেকটু") || lower.contains("tell me more") ||
+                lower.contains("explain more")) && lastUserMsg.isNotBlank()
+        ) {
+            return Result.success(
+                simpleTurn(
+                    reply = if (language == SathiLanguage.BN) "আমি এ বিষয়ে আরও খুঁজে দেখছি..." else "Searching for more details...",
+                    mood = SathiMood.SERIOUS,
+                    action = PhoneActionType.WEB_SEARCH,
+                    param = lastUserMsg
+                )
+            )
+        }
+
+        // Natural, non-repetitive conversational replies
         val naturalBn = listOf(
             "আমি আপনার কথা মন দিয়ে শুনছি, $userName। এ বিষয়ে আপনি কী জানতে চান বা করতে চান বলুন?",
-            "জি $userName! আপনি চাইলে সময়-তারিখ, জেলার আবহাওয়া, খবর বা '+' বাটন দিয়ে ছবি, ভিডিও ও স্ক্রিন শেয়ার দেখাতে পারেন।",
-            "আমি সাথেই আছি, $userName। কোন বিষয়টি নিয়ে কথা বলব বা কোন তথ্যটি খুঁজে দেব বলুন!"
+            "জি $userName! আপনি চাইলে সময়-তারিখ, জেলার আবহাওয়া, ডলারের রেট, খবর বা '+' বাটন দিয়ে ছবি, ভিডিও ও স্ক্রিন শেয়ার দেখাতে পারেন।",
+            if (lastAiReply.isNotBlank()) "জি $userName, আমরা '${lastUserMsg.take(28)}' নিয়ে কথা বলছিলাম—এখন কী সাহায্য করতে পারি বলুন!"
+            else "আমি সাথেই আছি, $userName। কোন বিষয়টি নিয়ে কথা বলব বা কোন তথ্যটি খুঁজে দেব বলুন!"
         )
         val naturalEn = listOf(
             "I hear you, $userName. Tell me more, or tap + to share a photo, video, or your phone screen!",
-            "Got it, $userName! You can ask me the time, weather in any district, Bangladesh news, or a story anytime.",
+            "Got it, $userName! You can ask me the time, weather in any district, live news, currency rates, or a story anytime.",
             "I'm right here with you, $userName. What would you like to explore next?"
         )
         val idx = chatCursor++ % naturalBn.size
@@ -409,10 +452,24 @@ class SathiAiService {
         bitmap: Bitmap,
         question: String,
         language: SathiLanguage,
-        isScreenCapture: Boolean = false
+        isScreenCapture: Boolean = false,
+        apiKey: String = ""
     ): Result<String> = withContext(Dispatchers.Default) {
         try {
             val safeBitmap = BitmapUtils.ensureSoftwareBitmap(bitmap)
+
+            if (apiKey.isNotBlank()) {
+                callGeminiVisionRest(
+                    apiKey = apiKey,
+                    bitmap = safeBitmap,
+                    question = question,
+                    language = language,
+                    isScreenCapture = isScreenCapture
+                )?.let { geminiReply ->
+                    return@withContext Result.success(geminiReply)
+                }
+            }
+
             val stats = inspectBitmapStats(safeBitmap)
             val labels = detectImageLabels(safeBitmap)
             val recognizedText = detectTextFromBitmap(safeBitmap)
@@ -791,12 +848,186 @@ class SathiAiService {
         }
     }
 
+    private fun isExplicitPhoneControl(lower: String): Boolean =
+        lower.contains("flashlight") || lower.contains("torch") || lower.contains("ফ্ল্যাশ") || lower.contains("টর্চ") ||
+            lower.contains("volume ") || lower.contains("ভলিউম") ||
+            lower.contains("alarm") || lower.contains("অ্যালার্ম") ||
+            lower.contains("timer") || lower.contains("টাইমার") ||
+            lower.startsWith("call ") || lower.contains("কল কর") || lower.contains("ফোন কর") ||
+            lower.startsWith("sms ") || lower.startsWith("message ") || lower.contains("মেসেজ পাঠা") ||
+            lower.contains("youtube") || lower.contains("ইউটিউব") ||
+            lower.startsWith("open ") || lower.contains("খোলো") || lower.contains("চালু করো")
+
+    private suspend fun callGeminiRestWithSearch(
+        apiKey: String,
+        userMessage: String,
+        language: SathiLanguage,
+        userName: String,
+        memories: List<UserMemory>,
+        recentHistory: List<Pair<Boolean, String>>
+    ): SathiTurnResult? = withContext(Dispatchers.IO) {
+        try {
+            val langName = if (language == SathiLanguage.BN) "Bengali (বাংলা)" else "English"
+            val memorySummary = if (memories.isNotEmpty()) {
+                memories.take(6).joinToString("; ") { "${it.title}: ${it.content}" }
+            } else ""
+            val sysText = buildString {
+                append("You are Sathi (সাথী), a warm, caring, intelligent personal AI voice companion created by Mohammad Bayzid Hasan (মোহাম্মদ বাইজিদ হাসান). ")
+                append("Never say 'নমস্কার' or any religious greeting other than 'আসসালামু আলাইকুম' when greeting. ")
+                append("Address the user warmly as $userName. Reply clearly and concisely in $langName so it sounds natural when spoken aloud.")
+                if (memorySummary.isNotBlank()) {
+                    append(" User memories: $memorySummary.")
+                }
+            }
+
+            val contents = JSONArray()
+            recentHistory.takeLast(8).forEach { (isUser, msg) ->
+                if (msg.isNotBlank()) {
+                    contents.put(
+                        JSONObject().apply {
+                            put("role", if (isUser) "user" else "model")
+                            put("parts", JSONArray().put(JSONObject().put("text", msg.take(800))))
+                        }
+                    )
+                }
+            }
+            contents.put(
+                JSONObject().apply {
+                    put("role", "user")
+                    put("parts", JSONArray().put(JSONObject().put("text", userMessage)))
+                }
+            )
+
+            val payload = JSONObject().apply {
+                put("system_instruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sysText))))
+                put("contents", contents)
+                put("tools", JSONArray().put(JSONObject().put("google_search", JSONObject())))
+            }
+
+            val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey"
+            val req = Request.Builder()
+                .url(url)
+                .post(payload.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+
+            httpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext null
+                val body = resp.body?.string() ?: return@withContext null
+                val root = JSONObject(body)
+                val cand = root.optJSONArray("candidates")?.optJSONObject(0) ?: return@withContext null
+                val parts = cand.optJSONObject("content")?.optJSONArray("parts") ?: return@withContext null
+                val reply = buildString {
+                    for (i in 0 until parts.length()) {
+                        val t = parts.optJSONObject(i)?.optString("text").orEmpty()
+                        if (t.isNotBlank()) append(t)
+                    }
+                }.trim()
+                if (reply.isBlank()) return@withContext null
+
+                val sources = mutableListOf<WebSource>()
+                val chunks = cand.optJSONObject("groundingMetadata")?.optJSONArray("groundingChunks")
+                if (chunks != null) {
+                    for (i in 0 until chunks.length()) {
+                        val web = chunks.optJSONObject(i)?.optJSONObject("web") ?: continue
+                        val uri = web.optString("uri").trim()
+                        val title = web.optString("title").trim()
+                        if (uri.startsWith("http")) {
+                            sources.add(WebSource(title = title.ifBlank { uri }, snippet = "Google Search", url = uri))
+                        }
+                    }
+                }
+
+                simpleTurn(
+                    reply = reply,
+                    mood = SathiMood.WARM,
+                    sources = sources.distinctBy { it.url }.take(4)
+                )
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private suspend fun callGeminiVisionRest(
+        apiKey: String,
+        bitmap: Bitmap,
+        question: String,
+        language: SathiLanguage,
+        isScreenCapture: Boolean
+    ): String? = withContext(Dispatchers.IO) {
+        try {
+            val scaled = if (bitmap.width > 1024 || bitmap.height > 1024) {
+                val ratio = 1024f / maxOf(bitmap.width, bitmap.height)
+                Bitmap.createScaledBitmap(
+                    bitmap,
+                    (bitmap.width * ratio).toInt().coerceAtLeast(1),
+                    (bitmap.height * ratio).toInt().coerceAtLeast(1),
+                    true
+                )
+            } else bitmap
+
+            val baos = ByteArrayOutputStream()
+            scaled.compress(Bitmap.CompressFormat.JPEG, 82, baos)
+            val b64 = android.util.Base64.encodeToString(baos.toByteArray(), android.util.Base64.NO_WRAP)
+
+            val promptText = buildString {
+                if (language == SathiLanguage.BN) {
+                    append(if (isScreenCapture) "এই ফোনের স্ক্রিনে কী দেখা যাচ্ছে তা সহজ বাংলায় বুঝিয়ে বলো।" else "এই ছবিটিতে কী আছে তা স্পষ্ট বাংলায় বর্ণনা করো।")
+                } else {
+                    append(if (isScreenCapture) "Explain what is shown on this phone screen clearly." else "Describe what is visible in this photo clearly.")
+                }
+                if (question.isNotBlank()) {
+                    append("\nUser question: $question")
+                }
+            }
+
+            val parts = JSONArray()
+                .put(JSONObject().put("text", promptText))
+                .put(
+                    JSONObject().put(
+                        "inline_data",
+                        JSONObject().apply {
+                            put("mime_type", "image/jpeg")
+                            put("data", b64)
+                        }
+                    )
+                )
+
+            val payload = JSONObject().apply {
+                put("contents", JSONArray().put(JSONObject().put("parts", parts)))
+            }
+            val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey"
+            val req = Request.Builder()
+                .url(url)
+                .post(payload.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+
+            httpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext null
+                val body = resp.body?.string() ?: return@withContext null
+                val partsOut = JSONObject(body)
+                    .optJSONArray("candidates")
+                    ?.optJSONObject(0)
+                    ?.optJSONObject("content")
+                    ?.optJSONArray("parts") ?: return@withContext null
+                val textOut = (0 until partsOut.length())
+                    .mapNotNull { partsOut.optJSONObject(it)?.optString("text") }
+                    .joinToString("")
+                    .trim()
+                textOut.takeIf { it.isNotBlank() }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private fun simpleTurn(
         reply: String,
         mood: SathiMood,
         action: PhoneActionType = PhoneActionType.NONE,
         param: String = "",
-        secondary: String = ""
+        secondary: String = "",
+        sources: List<WebSource> = emptyList()
     ) = SathiTurnResult(
         replyText = reply,
         mood = mood,
@@ -806,7 +1037,8 @@ class SathiAiService {
         shouldSaveMemory = false,
         memoryCategory = MemoryCategory.NOTE,
         memoryTitle = "",
-        memoryContent = ""
+        memoryContent = "",
+        groundedSources = sources
     )
 
     companion object {

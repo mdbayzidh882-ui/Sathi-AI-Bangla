@@ -25,6 +25,7 @@ data class VoiceEngineState(
     val listening: Boolean = false,
     val speaking: Boolean = false,
     val liveSessionActive: Boolean = false,
+    val muted: Boolean = false,
     val partialTranscript: String = "",
     val ttsReady: Boolean = false,
     val speechErrorMessage: String? = null
@@ -63,10 +64,10 @@ class VoiceController(
                     override fun onDone(utteranceId: String?) {
                         _state.value = _state.value.copy(speaking = false)
                         consecutiveLiveSilenceCount = 0
-                        if (_state.value.liveSessionActive && liveAutoListenAfterTts) {
+                        if (_state.value.liveSessionActive && liveAutoListenAfterTts && !_state.value.muted) {
                             liveAutoListenAfterTts = false
                             mainHandler.postDelayed({
-                                if (_state.value.liveSessionActive && !_state.value.listening && !_state.value.speaking) {
+                                if (_state.value.liveSessionActive && !_state.value.muted && !_state.value.listening && !_state.value.speaking) {
                                     startListeningInternal(activeLanguage, preferOfflineRecognition)
                                 }
                             }, 350L)
@@ -93,7 +94,7 @@ class VoiceController(
         activeLanguage = language
         preferOfflineRecognition = preferOffline
         consecutiveLiveSilenceCount = 0
-        _state.value = _state.value.copy(liveSessionActive = true, speechErrorMessage = null)
+        _state.value = _state.value.copy(liveSessionActive = true, muted = false, speechErrorMessage = null)
         startListeningInternal(language, preferOffline)
     }
 
@@ -101,9 +102,23 @@ class VoiceController(
         liveAutoListenAfterTts = false
         consecutiveLiveSilenceCount = 0
         lastPartialTranscript = ""
-        _state.value = _state.value.copy(liveSessionActive = false)
+        _state.value = _state.value.copy(liveSessionActive = false, muted = false)
         stopListening()
         stopSpeaking()
+    }
+
+    fun toggleMute() {
+        setMuted(!_state.value.muted)
+    }
+
+    fun setMuted(muted: Boolean) {
+        _state.value = _state.value.copy(muted = muted)
+        if (muted) {
+            liveAutoListenAfterTts = false
+            stopListening()
+        } else if (_state.value.liveSessionActive && !_state.value.speaking && !_state.value.listening) {
+            startListeningInternal(activeLanguage, preferOfflineRecognition)
+        }
     }
 
     fun setLiveSessionEnabled(enabled: Boolean) {
@@ -171,14 +186,19 @@ class VoiceController(
                                 return
                             }
 
-                            if (_state.value.liveSessionActive && isTimeoutOrNoMatch && consecutiveLiveSilenceCount < 8) {
+                            if (_state.value.liveSessionActive && !_state.value.muted && isTimeoutOrNoMatch && consecutiveLiveSilenceCount < 8) {
                                 consecutiveLiveSilenceCount++
                                 _state.value = _state.value.copy(listening = false, speechErrorMessage = null)
                                 mainHandler.postDelayed({
-                                    if (_state.value.liveSessionActive && !_state.value.speaking) {
+                                    if (_state.value.liveSessionActive && !_state.value.muted && !_state.value.speaking) {
                                         startListeningInternal(activeLanguage, preferOfflineRecognition)
                                     }
                                 }, 320L)
+                                return
+                            }
+
+                            if (_state.value.muted) {
+                                _state.value = _state.value.copy(listening = false, speechErrorMessage = null)
                                 return
                             }
 
@@ -201,9 +221,9 @@ class VoiceController(
                             )
                             if (spoken.isNotEmpty()) {
                                 onFinalTranscript(spoken)
-                            } else if (_state.value.liveSessionActive) {
+                            } else if (_state.value.liveSessionActive && !_state.value.muted) {
                                 mainHandler.postDelayed({
-                                    if (_state.value.liveSessionActive && !_state.value.speaking) {
+                                    if (_state.value.liveSessionActive && !_state.value.muted && !_state.value.speaking) {
                                         startListeningInternal(activeLanguage, preferOfflineRecognition)
                                     }
                                 }, 320L)

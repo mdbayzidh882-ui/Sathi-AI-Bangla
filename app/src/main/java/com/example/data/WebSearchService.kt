@@ -27,7 +27,7 @@ class WebSearchService {
 
             val lower = trimmed.lowercase()
 
-            // 1. Live weather query -> Open-Meteo Geocoding + Forecast (all Bangladesh + world, no noisy Wiki districts!)
+            // 1. Live weather query -> Open-Meteo Geocoding + Forecast (all Bangladesh + world)
             if (isWeatherQuery(lower)) {
                 val weather = fetchLiveWeatherWithGeocoding(trimmed, language)
                 if (weather != null) {
@@ -35,24 +35,37 @@ class WebSearchService {
                 }
             }
 
-            // 2. Live news / sports / scores -> Google News RSS for Bangladesh + Global
+            // 2. Live currency exchange rates (USD/EUR/SAR/AED/INR to BDT)
+            if (isCurrencyQuery(lower)) {
+                fetchExchangeRateSource(trimmed, language)?.let { rateSource ->
+                    return@withContext listOf(rateSource)
+                }
+            }
+
+            // 3. Live news / sports / scores -> Google News RSS for Bangladesh + Global
             val results = mutableListOf<WebSource>()
             if (isNewsOrScoreQuery(lower)) {
                 results.addAll(fetchGoogleNewsRss(trimmed, language))
             }
 
-            // 3. Extract clean topic before searching Wikipedia / DuckDuckGo
-            val cleanTopic = extractSearchTopic(trimmed)
+            // 4. Multi-engine web search (DuckDuckGo Instant + DuckDuckGo Web + Wikipedia BN/EN + News fallback)
+            val cleanTopic = extractSearchTopic(trimmed).ifBlank { trimmed.take(80) }
             if (cleanTopic.length >= 2) {
+                fetchDuckDuckGoSource(cleanTopic)?.let { results.add(it) }
+
+                if (results.size < 3) {
+                    results.addAll(fetchDuckDuckGoWebResults(trimmed, language))
+                }
+
                 val wikiLang = if (language == SathiLanguage.BN || cleanTopic.any { it in '\u0980'..'\u09FF' }) "bn" else "en"
                 if (results.size < 3) {
                     results.addAll(fetchWikipediaSources(cleanTopic, wikiLang))
                 }
-                if (results.isEmpty() && wikiLang == "bn") {
+                if (results.size < 2 && wikiLang == "bn") {
                     results.addAll(fetchWikipediaSources(cleanTopic, "en"))
                 }
-                if (results.size < 2) {
-                    fetchDuckDuckGoSource(cleanTopic)?.let { results.add(it) }
+                if (results.isEmpty()) {
+                    results.addAll(fetchGoogleNewsRss(cleanTopic, language))
                 }
             }
 
@@ -82,11 +95,69 @@ class WebSearchService {
             lower.contains("temperature") || lower.contains("তাপমাত্রা") || lower.contains("বৃষ্টি") ||
             lower.contains("গরম") || lower.contains("শীত")
 
+    private fun isCurrencyQuery(lower: String): Boolean =
+        lower.contains("dollar") || lower.contains("usd") || lower.contains("bdt") ||
+            lower.contains("euro") || lower.contains("riyal") || lower.contains("dirham") ||
+            lower.contains("exchange rate") || lower.contains("currency") ||
+            lower.contains("ডলার") || lower.contains("রিয়াল") || lower.contains("রিয়াল") ||
+            lower.contains("দিরহাম") || lower.contains("ইউরো") || lower.contains("পাউন্ড") ||
+            ((lower.contains("টাকা") || lower.contains("রেট")) &&
+                (lower.contains("দাম") || lower.contains("কত") || lower.contains("rate")))
+
     private fun isNewsOrScoreQuery(lower: String): Boolean =
         lower.contains("news") || lower.contains("খবর") || lower.contains("সংবাদ") ||
             lower.contains("score") || lower.contains("স্কোর") || lower.contains("খেলা") ||
             lower.contains("cricket") || lower.contains("ক্রিকেট") || lower.contains("football") ||
             lower.contains("ফুটবল") || lower.contains("আজকের") || lower.contains("today")
+
+    private fun fetchExchangeRateSource(query: String, language: SathiLanguage): WebSource? {
+        return try {
+            val req = Request.Builder()
+                .url("https://open.er-api.com/v6/latest/USD")
+                .header("User-Agent", "SathiAndroidApp/1.0")
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return null
+                val body = resp.body?.string() ?: return null
+                val rates = JSONObject(body).optJSONObject("rates") ?: return null
+                val bdtPerUsd = rates.optDouble("BDT", Double.NaN)
+                val eurPerUsd = rates.optDouble("EUR", Double.NaN)
+                val sarPerUsd = rates.optDouble("SAR", Double.NaN)
+                val aedPerUsd = rates.optDouble("AED", Double.NaN)
+                val inrPerUsd = rates.optDouble("INR", Double.NaN)
+                if (bdtPerUsd.isNaN()) return null
+
+                val bdtPerEur = if (!eurPerUsd.isNaN() && eurPerUsd > 0) bdtPerUsd / eurPerUsd else 0.0
+                val bdtPerSar = if (!sarPerUsd.isNaN() && sarPerUsd > 0) bdtPerUsd / sarPerUsd else 0.0
+                val bdtPerAed = if (!aedPerUsd.isNaN() && aedPerUsd > 0) bdtPerUsd / aedPerUsd else 0.0
+                val bdtPerInr = if (!inrPerUsd.isNaN() && inrPerUsd > 0) bdtPerUsd / inrPerUsd else 0.0
+
+                val snippet = if (language == SathiLanguage.BN) {
+                    buildString {
+                        append("১ মার্কিন ডলার (USD) ≈ ${String.format("%.2f", bdtPerUsd)} টাকা")
+                        if (bdtPerEur > 0) append(" • ১ ইউরো ≈ ${String.format("%.2f", bdtPerEur)} টাকা")
+                        if (bdtPerSar > 0) append(" • ১ সৌদি রিয়াল ≈ ${String.format("%.2f", bdtPerSar)} টাকা")
+                        if (bdtPerAed > 0) append(" • ১ দিরহাম ≈ ${String.format("%.2f", bdtPerAed)} টাকা")
+                        if (bdtPerInr > 0) append(" • ১ রুপি ≈ ${String.format("%.2f", bdtPerInr)} টাকা")
+                    }
+                } else {
+                    buildString {
+                        append("1 USD ≈ ${String.format("%.2f", bdtPerUsd)} BDT")
+                        if (bdtPerEur > 0) append(" • 1 EUR ≈ ${String.format("%.2f", bdtPerEur)} BDT")
+                        if (bdtPerSar > 0) append(" • 1 SAR ≈ ${String.format("%.2f", bdtPerSar)} BDT")
+                        if (bdtPerAed > 0) append(" • 1 AED ≈ ${String.format("%.2f", bdtPerAed)} BDT")
+                    }
+                }
+                WebSource(
+                    title = if (language == SathiLanguage.BN) "লাইভ মুদ্রা বিনিময় হার (Exchange Rate)" else "Live Currency Exchange Rates",
+                    snippet = snippet,
+                    url = "https://www.exchangerate-api.com/"
+                )
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
 
     private fun fetchLiveWeatherWithGeocoding(query: String, language: SathiLanguage): WebSource? {
         return try {
@@ -354,7 +425,7 @@ class WebSearchService {
                 if (abstractText.isNotEmpty() && abstractUrl.isNotEmpty()) {
                     WebSource(
                         title = heading.ifBlank { query },
-                        snippet = abstractText.take(280),
+                        snippet = abstractText.take(300),
                         url = abstractUrl
                     )
                 } else null
@@ -363,6 +434,83 @@ class WebSearchService {
             null
         }
     }
+
+    private fun fetchDuckDuckGoWebResults(query: String, language: SathiLanguage): List<WebSource> {
+        return try {
+            val encoded = URLEncoder.encode(query, "UTF-8")
+            val region = if (language == SathiLanguage.BN) "bd-bn" else "wt-wt"
+            val url = "https://html.duckduckgo.com/html/?q=$encoded&kl=$region"
+            val req = Request.Builder()
+                .url(url)
+                .header(
+                    "User-Agent",
+                    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36"
+                )
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return emptyList()
+                val html = resp.body?.string() ?: return emptyList()
+                val linkPattern = Regex(
+                    """<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>""",
+                    setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+                )
+                val snippetPattern = Regex(
+                    """<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>|<div[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</div>""",
+                    setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+                )
+                val links = linkPattern.findAll(html).toList()
+                val snippets = snippetPattern.findAll(html).toList()
+                buildList {
+                    for (i in links.indices) {
+                        if (size >= 3) break
+                        val rawUrl = decodeDuckDuckGoHref(links[i].groupValues[1])
+                        val title = stripHtml(links[i].groupValues[2])
+                        val snippet = snippets.getOrNull(i)?.let { m ->
+                            stripHtml(m.groupValues[1].ifBlank { m.groupValues[2] })
+                        }.orEmpty()
+                        if (title.isNotBlank() && rawUrl.startsWith("http")) {
+                            add(
+                                WebSource(
+                                    title = title.take(110),
+                                    snippet = snippet.ifBlank { title }.take(260),
+                                    url = rawUrl
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun decodeDuckDuckGoHref(raw: String): String {
+        val clean = decodeHtmlEntities(raw)
+        val uddgMatch = Regex("[?&]uddg=([^&]+)").find(clean)
+        if (uddgMatch != null) {
+            return try {
+                java.net.URLDecoder.decode(uddgMatch.groupValues[1], "UTF-8")
+            } catch (_: Exception) {
+                clean
+            }
+        }
+        return if (clean.startsWith("//")) "https:$clean" else clean
+    }
+
+    private fun stripHtml(raw: String): String =
+        decodeHtmlEntities(raw.replace(Regex("<[^>]*>"), " "))
+            .replace(Regex("\\s+"), " ")
+            .trim()
+
+    private fun decodeHtmlEntities(raw: String): String =
+        raw.replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&apos;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&nbsp;", " ")
 
     private fun weatherCodeToBn(code: Int): String = when (code) {
         0 -> "পরিষ্কার আকাশ"

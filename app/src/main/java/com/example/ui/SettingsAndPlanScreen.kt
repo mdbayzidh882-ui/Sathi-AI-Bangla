@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AdminPanelSettings
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BubbleChart
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Delete
@@ -80,6 +81,9 @@ fun SettingsAndPlanScreen(
 
     var nameInput by remember(profile?.userName) {
         mutableStateOf(profile?.userName.orEmpty())
+    }
+    var geminiKeyInput by remember(localSettings.customGeminiApiKey) {
+        mutableStateOf(localSettings.customGeminiApiKey)
     }
     var codeInput by remember { mutableStateOf("") }
     var showPrivacyDialog by remember { mutableStateOf(false) }
@@ -155,8 +159,7 @@ fun SettingsAndPlanScreen(
 
     LazyColumn(
         modifier = modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
+            .fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
@@ -296,6 +299,77 @@ fun SettingsAndPlanScreen(
                                 if (floatingRunning) "Turn Off Floating Orb" else "Enable Floating Orb"
                             }
                         )
+                    }
+                }
+            }
+        }
+
+        // 2b. Optional Gemini Cloud AI Key (Zero-Setup works without it; paste key for full Google Search + Vision)
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                shape = MaterialTheme.shapes.large
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (language == SathiLanguage.BN) {
+                                "গুগল জেমিনি সার্চ ও এআই ব্রেইন (ঐচ্ছিক)"
+                            } else {
+                                "Google Gemini Search & AI Brain (Optional)"
+                            },
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Text(
+                        text = if (language == SathiLanguage.BN) {
+                            "চাইলে নিজের ফ্রি Gemini API Key যোগ করলে সাথী হুবহু গুগল জেমিনির মতো গুগল সার্চ, গভীর আলোচনা ও ছবি/স্ক্রিন বিশ্লেষণ করবে। কী ছাড়াও সাথী সম্পূর্ণ চালু থাকে।"
+                        } else {
+                            "Optional: add your personal Gemini API Key to unlock live Google Search grounding and deep multimodal vision. Sathi also works without a key."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = geminiKeyInput,
+                        onValueChange = { geminiKeyInput = it },
+                        label = {
+                            Text(if (language == SathiLanguage.BN) "Gemini API Key (ঐচ্ছিক)" else "Gemini API Key (Optional)")
+                        },
+                        placeholder = { Text("AIza...") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("optional_gemini_key_input")
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = { viewModel.saveCustomGeminiApiKey(geminiKeyInput) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("save_gemini_key_button")
+                        ) {
+                            Text(if (language == SathiLanguage.BN) "সংরক্ষণ করুন" else "Save Key")
+                        }
+                        if (localSettings.customGeminiApiKey.isNotBlank()) {
+                            OutlinedButton(
+                                onClick = {
+                                    geminiKeyInput = ""
+                                    viewModel.saveCustomGeminiApiKey("")
+                                }
+                            ) {
+                                Text(if (language == SathiLanguage.BN) "মুছুন" else "Clear")
+                            }
+                        }
                     }
                 }
             }

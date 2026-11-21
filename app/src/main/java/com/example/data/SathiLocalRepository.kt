@@ -2,17 +2,23 @@ package com.example.data
 
 import com.example.model.ActivityLog
 import com.example.model.AppConfig
+import com.example.model.ChatMessage
+import com.example.model.ChatSession
 import com.example.model.CodeType
 import com.example.model.MemoryCategory
 import com.example.model.PlanTier
 import com.example.model.PremiumCode
+import com.example.model.SathiMood
 import com.example.model.UserMemory
 import com.example.model.UserProfile
+import com.example.model.WebSource
 import java.security.SecureRandom
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import org.json.JSONArray
+import org.json.JSONObject
 
 class SathiLocalRepository(private val dao: SathiDao) {
 
@@ -157,12 +163,77 @@ class SathiLocalRepository(private val dao: SathiDao) {
     suspend fun deleteAllUserData(uid: String): Result<Unit> {
         return try {
             dao.deleteAllMemoriesForUser(uid)
+            dao.deleteAllChatMessagesForUser(uid)
+            dao.deleteAllChatSessionsForUser(uid)
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    // --- Chat Sessions & Messages (Gemini-style Drawer History & Pinning) ---
+
+    fun observeChatSessions(uid: String): Flow<List<ChatSession>> =
+        dao.observeChatSessions(uid).map { list -> list.map { it.toDomain() } }
+
+    suspend fun createChatSession(uid: String, title: String): ChatSession {
+        val now = System.currentTimeMillis()
+        val entity = ChatSessionEntity(
+            id = UUID.randomUUID().toString(),
+            userId = uid,
+            title = title.trim().ifBlank { "নতুন কথোপকথন" }.take(80),
+            isPinned = false,
+            createdAt = now,
+            updatedAt = now
+        )
+        dao.upsertChatSession(entity)
+        return entity.toDomain()
+    }
+
+    suspend fun renameChatSession(sessionId: String, title: String) {
+        val clean = title.trim().take(80)
+        if (clean.isNotBlank()) {
+            dao.renameChatSession(sessionId, clean, System.currentTimeMillis())
+        }
+    }
+
+    suspend fun togglePinChatSession(sessionId: String, pinned: Boolean) {
+        dao.updateChatSessionPinned(sessionId, pinned, System.currentTimeMillis())
+    }
+
+    suspend fun deleteChatSession(sessionId: String) {
+        dao.deleteMessagesForSession(sessionId)
+        dao.deleteChatSession(sessionId)
+    }
+
+    suspend fun getMessagesForSessionOnce(sessionId: String): List<ChatMessage> =
+        dao.getMessagesForSessionOnce(sessionId).map { it.toDomain() }
+
+    suspend fun upsertChatMessage(uid: String, sessionId: String, message: ChatMessage) {
+        val now = message.timestampMs
+        dao.upsertChatMessage(
+            ChatMessageEntity(
+                id = message.id,
+                sessionId = sessionId,
+                userId = uid,
+                isUser = message.isUser,
+                text = message.text,
+                moodCode = message.mood.code,
+                sourcesJson = encodeSourcesJson(message.sources),
+                actionLabel = message.actionLabel,
+                isOfflineReply = message.isOfflineReply,
+                mediaBadge = message.mediaBadge,
+                reaction = message.reaction,
+                timestampMs = now
+            )
+        )
+        dao.touchChatSession(sessionId, now)
+    }
+
+    suspend fun updateMessageReaction(messageId: String, reaction: Int) {
+        dao.updateMessageReaction(messageId, reaction)
     }
 
     fun observeGlobalConfig(): Flow<AppConfig> =
@@ -497,6 +568,65 @@ class SathiLocalRepository(private val dao: SathiDao) {
         details = details,
         createdAt = createdAt
     )
+
+    private fun ChatSessionEntity.toDomain() = ChatSession(
+        id = id,
+        userId = userId,
+        title = title,
+        isPinned = isPinned,
+        createdAt = createdAt,
+        updatedAt = updatedAt
+    )
+
+    private fun ChatMessageEntity.toDomain() = ChatMessage(
+        id = id,
+        isUser = isUser,
+        text = text,
+        mood = SathiMood.fromCode(moodCode),
+        sources = decodeSourcesJson(sourcesJson),
+        actionLabel = actionLabel,
+        isOfflineReply = isOfflineReply,
+        mediaBadge = mediaBadge,
+        reaction = reaction,
+        sessionId = sessionId,
+        timestampMs = timestampMs
+    )
+
+    private fun encodeSourcesJson(sources: List<WebSource>): String {
+        if (sources.isEmpty()) return "[]"
+        val arr = JSONArray()
+        sources.forEach { src ->
+            arr.put(
+                JSONObject().apply {
+                    put("title", src.title)
+                    put("snippet", src.snippet)
+                    put("url", src.url)
+                }
+            )
+        }
+        return arr.toString()
+    }
+
+    private fun decodeSourcesJson(raw: String): List<WebSource> {
+        if (raw.isBlank() || raw == "[]") return emptyList()
+        return try {
+            val arr = JSONArray(raw)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    add(
+                        WebSource(
+                            title = obj.optString("title"),
+                            snippet = obj.optString("snippet"),
+                            url = obj.optString("url")
+                        )
+                    )
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
 
     companion object {
         const val LOCAL_OWNER_UID = "local_owner"

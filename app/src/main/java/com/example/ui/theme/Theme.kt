@@ -7,6 +7,7 @@ import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
@@ -25,9 +26,9 @@ private val SathiLightColorScheme = lightColorScheme(
     onTertiaryContainer = SathiOnPeriwinkleContainer,
     background = SathiMistBg,
     onBackground = SathiPlumInk,
-    surface = SathiMistSurface,
+    surface = Color(0xF5FFFFFF),
     onSurface = SathiPlumInk,
-    surfaceVariant = SathiMistCard,
+    surfaceVariant = Color(0xEBFFFFFF),
     onSurfaceVariant = SathiMutedPlum,
     outline = SathiMistOutline
 )
@@ -60,6 +61,31 @@ val SathiShapes = Shapes(
     large = RoundedCornerShape(26.dp),
     extraLarge = RoundedCornerShape(32.dp)
 )
+
+@Composable
+fun sathiHorizonBackgroundBrush(darkTheme: Boolean = isSystemInDarkTheme()): Brush {
+    return if (darkTheme) {
+        Brush.verticalGradient(
+            colorStops = arrayOf(
+                0.00f to SathiTopYellowDark,
+                0.28f to SathiUpperYellowPullDark,
+                0.52f to SathiMiddleBlendDark,
+                0.78f to SathiLowerBluePullDark,
+                1.00f to SathiBottomBlueDark
+            )
+        )
+    } else {
+        Brush.verticalGradient(
+            colorStops = arrayOf(
+                0.00f to SathiTopYellowLight,
+                0.26f to SathiUpperYellowPullLight,
+                0.52f to SathiMiddleBlendLight,
+                0.78f to SathiLowerBluePullLight,
+                1.00f to SathiBottomBlueLight
+            )
+        )
+    }
+}
 
 @Composable
 fun SathiTheme(

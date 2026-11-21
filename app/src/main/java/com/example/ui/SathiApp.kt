@@ -1,5 +1,6 @@
 package com.example.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
@@ -13,6 +14,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationRail
@@ -25,8 +27,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import com.example.ui.theme.sathiHorizonBackgroundBrush
 import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -116,7 +120,11 @@ private fun SathiMainShell(
         return
     }
 
-    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(sathiHorizonBackgroundBrush())
+    ) {
         val isWide = maxWidth >= 600.dp
 
         if (isWide) {
@@ -125,7 +133,7 @@ private fun SathiMainShell(
                     .fillMaxSize()
                     .statusBarsPadding()
             ) {
-                NavigationRail {
+                NavigationRail(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.26f)) {
                     SathiDestination.entries.forEach { dest ->
                         NavigationRailItem(
                             selected = selectedTab == dest,
@@ -145,9 +153,13 @@ private fun SathiMainShell(
             }
         } else {
             Scaffold(
+                containerColor = Color.Transparent,
                 contentWindowInsets = WindowInsets.navigationBars,
                 bottomBar = {
-                    NavigationBar(windowInsets = WindowInsets.navigationBars) {
+                    NavigationBar(
+                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.26f),
+                        windowInsets = WindowInsets.navigationBars
+                    ) {
                         SathiDestination.entries.forEach { dest ->
                             NavigationBarItem(
                                 selected = selectedTab == dest,

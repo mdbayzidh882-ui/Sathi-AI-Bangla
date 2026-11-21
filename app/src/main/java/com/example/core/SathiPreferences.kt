@@ -36,7 +36,8 @@ data class LocalSettingsState(
     val failedCodeAttempts: Int = 0,
     val codeLockoutUntilMs: Long = 0L,
     val preferredLanguageFallback: String = "bn",
-    val preferredVoiceFallback: String = "female"
+    val preferredVoiceFallback: String = "female",
+    val customGeminiApiKey: String = ""
 )
 
 class SathiPreferences(private val context: Context) {
@@ -50,6 +51,7 @@ class SathiPreferences(private val context: Context) {
         val CODE_LOCKOUT_UNTIL_MS = longPreferencesKey("code_lockout_until_ms")
         val PREFERRED_LANGUAGE = stringPreferencesKey("preferred_language")
         val PREFERRED_VOICE = stringPreferencesKey("preferred_voice")
+        val CUSTOM_GEMINI_API_KEY = stringPreferencesKey("custom_gemini_api_key")
     }
 
     val settingsFlow: Flow<LocalSettingsState> = context.sathiDataStore.data.map { prefs ->
@@ -66,7 +68,8 @@ class SathiPreferences(private val context: Context) {
             failedCodeAttempts = prefs[Keys.FAILED_CODE_ATTEMPTS] ?: 0,
             codeLockoutUntilMs = prefs[Keys.CODE_LOCKOUT_UNTIL_MS] ?: 0L,
             preferredLanguageFallback = prefs[Keys.PREFERRED_LANGUAGE] ?: "bn",
-            preferredVoiceFallback = prefs[Keys.PREFERRED_VOICE] ?: "female"
+            preferredVoiceFallback = prefs[Keys.PREFERRED_VOICE] ?: "female",
+            customGeminiApiKey = prefs[Keys.CUSTOM_GEMINI_API_KEY] ?: ""
         )
     }
 
@@ -123,6 +126,12 @@ class SathiPreferences(private val context: Context) {
         context.sathiDataStore.edit { prefs ->
             prefs[Keys.PREFERRED_LANGUAGE] = language
             prefs[Keys.PREFERRED_VOICE] = voice
+        }
+    }
+
+    suspend fun saveCustomGeminiApiKey(apiKey: String) {
+        context.sathiDataStore.edit { prefs ->
+            prefs[Keys.CUSTOM_GEMINI_API_KEY] = apiKey.trim()
         }
     }
 

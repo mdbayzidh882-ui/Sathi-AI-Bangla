@@ -98,6 +98,15 @@ data class PendingConfirmation(
     val messageBody: String = ""
 )
 
+data class ChatSession(
+    val id: String,
+    val userId: String,
+    val title: String,
+    val isPinned: Boolean = false,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
 data class ChatMessage(
     val id: String,
     val isUser: Boolean,
@@ -108,6 +117,8 @@ data class ChatMessage(
     val isOfflineReply: Boolean = false,
     val mediaThumbnail: Bitmap? = null,
     val mediaBadge: String? = null,
+    val reaction: Int = 0, // 1 = liked, -1 = disliked, 0 = neutral
+    val sessionId: String = "",
     val timestampMs: Long = System.currentTimeMillis()
 )
 

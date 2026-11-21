@@ -16,12 +16,15 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -45,13 +48,22 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.BubbleChart
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Campaign
+import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PhotoLibrary
@@ -59,6 +71,10 @@ import androidx.compose.material.icons.filled.ScreenShare
 import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.StopScreenShare
+import androidx.compose.material.icons.filled.ThumbDown
+import androidx.compose.material.icons.filled.ThumbDownOffAlt
+import androidx.compose.material.icons.filled.ThumbUp
+import androidx.compose.material.icons.filled.ThumbUpOffAlt
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.Visibility
@@ -71,36 +87,49 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.NavigationDrawerItemDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -109,6 +138,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.core.BitmapUtils
 import com.example.model.ChatMessage
+import com.example.model.ChatSession
 import com.example.model.PhoneActionType
 import com.example.model.PlanTier
 import com.example.model.SathiLanguage
@@ -119,6 +149,8 @@ import com.example.ui.theme.MoodComfortGlow
 import com.example.ui.theme.MoodHappyGlow
 import com.example.ui.theme.MoodSeriousGlow
 import com.example.ui.theme.MoodWarmGlow
+import com.example.ui.theme.sathiHorizonBackgroundBrush
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -127,10 +159,18 @@ fun HomeVoiceScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+
     val profile by viewModel.userProfile.collectAsStateWithLifecycle()
     val globalConfig by viewModel.globalConfig.collectAsStateWithLifecycle()
     val voiceState by viewModel.voiceState.collectAsStateWithLifecycle()
     val messages by viewModel.messages.collectAsStateWithLifecycle()
+    val chatSessions by viewModel.chatSessions.collectAsStateWithLifecycle()
+    val activeSessionId by viewModel.activeSessionId.collectAsStateWithLifecycle()
+    val streamingMessageId by viewModel.streamingMessageId.collectAsStateWithLifecycle()
+    val streamingCharLimit by viewModel.streamingCharLimit.collectAsStateWithLifecycle()
     val isThinking by viewModel.isThinking.collectAsStateWithLifecycle()
     val activeMood by viewModel.activeMood.collectAsStateWithLifecycle()
     val pendingConfirmation by viewModel.pendingConfirmation.collectAsStateWithLifecycle()
@@ -490,132 +530,154 @@ fun HomeVoiceScreen(
         )
     }
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    listOf(
-                        MaterialTheme.colorScheme.background,
-                        MaterialTheme.colorScheme.surface,
-                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)
-                    )
-                )
-            )
-    ) {
-        // Header Bar
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Image(
-                    painter = painterResource(id = R.drawable.img_sathi_companion),
-                    contentDescription = "Sathi Avatar",
-                    modifier = Modifier
-                        .size(42.dp)
-                        .clip(CircleShape),
-                    contentScale = ContentScale.Crop
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                Column {
-                    Text(
-                        text = if (language == SathiLanguage.BN) "সাথী • Sathi" else "Sathi",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    val plan = profile?.effectivePlan() ?: PlanTier.FREE
-                    Text(
-                        text = if (language == SathiLanguage.BN) plan.labelBn else plan.labelEn,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            SathiHistoryDrawerSheet(
+                sessions = chatSessions,
+                activeSessionId = activeSessionId,
+                language = language,
+                floatingRunning = floatingRunning,
+                onNewChat = {
+                    viewModel.startNewChat()
+                    scope.launch { drawerState.close() }
+                },
+                onSelectSession = { session ->
+                    viewModel.selectChatSession(session.id)
+                    scope.launch { drawerState.close() }
+                },
+                onTogglePin = { session -> viewModel.togglePinChatSession(session) },
+                onDeleteSession = { session -> viewModel.deleteChatSession(session) },
+                onToggleFloating = {
+                    scope.launch { drawerState.close() }
+                    toggleFloatingOverlay(
+                        context = context,
+                        currentlyRunning = floatingRunning,
+                        onNeedPermission = { showOverlayDialog = true }
                     )
                 }
-            }
-
+            )
+        }
+    ) {
+        Column(
+            modifier = modifier.fillMaxSize()
+        ) {
+            // Gemini-Style Header Bar: [≡ History]  Sathi Avatar & Title  [✏️ New Chat] [Float] [বাংলা/EN]
             Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                if (isOffline) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.tertiaryContainer,
-                        shape = RoundedCornerShape(50)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    IconButton(
+                        onClick = { scope.launch { drawerState.open() } },
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("drawer_menu_button")
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                        Icon(
+                            imageVector = Icons.Default.Menu,
+                            contentDescription = if (language == SathiLanguage.BN) "কথোপকথন তালিকা খুলুন" else "Open conversation history"
+                        )
+                    }
+                    Image(
+                        painter = painterResource(id = R.drawable.img_sathi_companion),
+                        contentDescription = "Sathi Avatar",
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape),
+                        contentScale = ContentScale.Crop
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column {
+                        Text(
+                            text = if (language == SathiLanguage.BN) "সাথী • Sathi" else "Sathi",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        val plan = profile?.effectivePlan() ?: PlanTier.FREE
+                        Text(
+                            text = if (language == SathiLanguage.BN) plan.labelBn else plan.labelEn,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1
+                        )
+                    }
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    if (isOffline) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.tertiaryContainer,
+                            shape = RoundedCornerShape(50)
                         ) {
                             Icon(
                                 Icons.Default.CloudOff,
                                 contentDescription = "Offline Mode",
-                                modifier = Modifier.size(14.dp),
+                                modifier = Modifier
+                                    .padding(horizontal = 6.dp, vertical = 4.dp)
+                                    .size(16.dp),
                                 tint = MaterialTheme.colorScheme.onTertiaryContainer
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = if (language == SathiLanguage.BN) "অফলাইন" else "Offline",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onTertiaryContainer
                             )
                         }
                     }
-                }
 
-                AssistChip(
-                    onClick = {
-                        toggleFloatingOverlay(
-                            context = context,
-                            currentlyRunning = floatingRunning,
-                            onNeedPermission = { showOverlayDialog = true }
-                        )
-                    },
-                    colors = if (floatingRunning) {
-                        AssistChipDefaults.assistChipColors(
-                            containerColor = MaterialTheme.colorScheme.primaryContainer,
-                            labelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
-                    } else {
-                        AssistChipDefaults.assistChipColors()
-                    },
-                    leadingIcon = {
+                    IconButton(
+                        onClick = { viewModel.startNewChat() },
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("new_chat_button")
+                    ) {
                         Icon(
-                            Icons.Default.BubbleChart,
-                            contentDescription = "Floating bubble",
-                            modifier = Modifier.size(16.dp)
-                        )
-                    },
-                    label = {
-                        Text(
-                            if (language == SathiLanguage.BN) {
-                                if (floatingRunning) "ভাসমান চালু" else "ভাসমান"
-                            } else {
-                                if (floatingRunning) "Floating On" else "Float"
-                            },
-                            maxLines = 1
+                            imageVector = Icons.Default.EditNote,
+                            contentDescription = if (language == SathiLanguage.BN) "নতুন কথোপকথন" else "New chat",
+                            tint = MaterialTheme.colorScheme.primary
                         )
                     }
-                )
 
-                AssistChip(
-                    onClick = {
-                        val next = if (language == SathiLanguage.BN) SathiLanguage.EN else SathiLanguage.BN
-                        viewModel.updateLanguageAndVoice(next, viewModel.currentVoice())
-                    },
-                    leadingIcon = {
+                    IconButton(
+                        onClick = {
+                            toggleFloatingOverlay(
+                                context = context,
+                                currentlyRunning = floatingRunning,
+                                onNeedPermission = { showOverlayDialog = true }
+                            )
+                        },
+                        modifier = Modifier.size(48.dp)
+                    ) {
                         Icon(
-                            Icons.Default.Translate,
-                            contentDescription = "Language",
-                            modifier = Modifier.size(16.dp)
+                            imageVector = Icons.Default.BubbleChart,
+                            contentDescription = if (language == SathiLanguage.BN) "ভাসমান বাবল" else "Floating bubble",
+                            tint = if (floatingRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                    },
-                    label = { Text(if (language == SathiLanguage.BN) "বাংলা" else "EN") }
-                )
+                    }
+
+                    AssistChip(
+                        onClick = {
+                            val next = if (language == SathiLanguage.BN) SathiLanguage.EN else SathiLanguage.BN
+                            viewModel.updateLanguageAndVoice(next, viewModel.currentVoice())
+                        },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Default.Translate,
+                                contentDescription = "Language",
+                                modifier = Modifier.size(15.dp)
+                            )
+                        },
+                        label = { Text(if (language == SathiLanguage.BN) "বাংলা" else "EN") }
+                    )
+                }
             }
-        }
 
         // Announcement Banner from Admin Panel
         AnimatedVisibility(visible = globalConfig.announcementActive && globalConfig.announcementText.isNotBlank()) {
@@ -667,68 +729,91 @@ fun HomeVoiceScreen(
             }
         }
 
-        // Conversation List
-        LazyColumn(
-            state = listState,
+        // Conversation List with Centered AI Logo in the Yellow-Blue middle zone
+        Box(
             modifier = Modifier
                 .weight(1f)
-                .fillMaxWidth(),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+                .fillMaxWidth()
         ) {
-            if (morningGreeting.isNotBlank()) {
-                item(key = "morning_greeting") {
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
-                        shape = MaterialTheme.shapes.medium
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(14.dp),
-                            verticalAlignment = Alignment.CenterVertically
+            CenterSathiAiLogo(
+                isProminent = messages.size <= 1,
+                isActive = voiceState.listening || voiceState.speaking || isThinking,
+                language = language,
+                modifier = Modifier.align(Alignment.Center)
+            )
+
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (morningGreeting.isNotBlank()) {
+                    item(key = "morning_greeting") {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+                            shape = MaterialTheme.shapes.medium
                         ) {
-                            Icon(
-                                Icons.Default.WbSunny,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onTertiaryContainer
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Text(
-                                text = morningGreeting,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onTertiaryContainer,
-                                modifier = Modifier.weight(1f)
-                            )
+                            Row(
+                                modifier = Modifier.padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Default.WbSunny,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onTertiaryContainer
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = morningGreeting,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
                         }
                     }
                 }
-            }
 
-            items(messages, key = { it.id }) { msg ->
-                ChatBubbleCard(
-                    message = msg,
-                    language = language,
-                    onSpeak = { viewModel.speakMessage(msg.text, msg.mood) },
-                    onOpenUrl = { url ->
-                        try {
-                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                        } catch (_: Exception) {
-                        }
+                items(messages, key = { it.id }) { msg ->
+                    val displayedText = if (msg.id == streamingMessageId && streamingCharLimit < msg.text.length) {
+                        msg.text.take(streamingCharLimit)
+                    } else {
+                        msg.text
                     }
-                )
-            }
+                    ChatBubbleCard(
+                        message = msg,
+                        displayedText = displayedText,
+                        language = language,
+                        onSpeak = { viewModel.speakMessage(msg.text, msg.mood) },
+                        onCopy = {
+                            clipboard.setText(AnnotatedString(msg.text))
+                        },
+                        onReact = { reaction ->
+                            viewModel.reactToMessage(msg.id, reaction)
+                        },
+                        onOpenUrl = { url ->
+                            try {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                            } catch (_: Exception) {
+                            }
+                        }
+                    )
+                }
 
-            if (voiceState.listening && voiceState.partialTranscript.isNotBlank()) {
-                item(key = "live_partial") {
-                    Surface(
-                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
-                        shape = MaterialTheme.shapes.medium,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = "🎙️ ${voiceState.partialTranscript}",
-                            style = MaterialTheme.typography.bodyLarge,
-                            modifier = Modifier.padding(12.dp)
-                        )
+                if (voiceState.listening && voiceState.partialTranscript.isNotBlank()) {
+                    item(key = "live_partial") {
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                            shape = MaterialTheme.shapes.medium,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "🎙️ ${voiceState.partialTranscript}",
+                                style = MaterialTheme.typography.bodyLarge,
+                                modifier = Modifier.padding(12.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -822,15 +907,23 @@ fun HomeVoiceScreen(
             }
         }
 
-        // Animated Gemini-Live Style Voice Orb + Stop Live Pill
+        // Animated Gemini-Live Style Voice Orb + Mute/Camera/Stop Controls
         SathiVoiceOrbBar(
             listening = voiceState.listening,
             speaking = voiceState.speaking,
             liveActive = voiceState.liveSessionActive,
+            muted = voiceState.muted,
             thinking = isThinking,
             mood = activeMood,
             language = language,
             onOrbClick = handleMicTap,
+            onToggleMute = { viewModel.toggleLiveMute() },
+            onOpenMedia = { showMediaSheet = true },
+            onQuickCamera = {
+                val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+                if (granted) homeCameraLauncher.launch(null)
+                else homeCameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+            },
             onStopLive = { viewModel.stopLiveVoiceSession() }
         )
 
@@ -858,8 +951,8 @@ fun HomeVoiceScreen(
                 onValueChange = { typedInput = it },
                 placeholder = {
                     Text(
-                        if (language == SathiLanguage.BN) "কথা বলুন অথবা এখানে লিখুন..."
-                        else "Speak or type your message..."
+                        if (language == SathiLanguage.BN) "সাথীকে জিজ্ঞাসা করুন..."
+                        else "Ask Sathi..."
                     )
                 },
                 singleLine = true,
@@ -884,6 +977,7 @@ fun HomeVoiceScreen(
             ) {
                 Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send message")
             }
+        }
         }
     }
 }
@@ -912,28 +1006,222 @@ fun toggleFloatingOverlay(
 }
 
 @Composable
+private fun SathiHistoryDrawerSheet(
+    sessions: List<ChatSession>,
+    activeSessionId: String?,
+    language: SathiLanguage,
+    floatingRunning: Boolean,
+    onNewChat: () -> Unit,
+    onSelectSession: (ChatSession) -> Unit,
+    onTogglePin: (ChatSession) -> Unit,
+    onDeleteSession: (ChatSession) -> Unit,
+    onToggleFloating: () -> Unit
+) {
+    val pinned = sessions.filter { it.isPinned }
+    val recent = sessions.filter { !it.isPinned }
+
+    ModalDrawerSheet(
+        drawerContainerColor = MaterialTheme.colorScheme.surface
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.AutoAwesome,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = if (language == SathiLanguage.BN) "সাথী • কথোপকথন" else "Sathi Chats",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Button(
+                onClick = onNewChat,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("drawer_new_chat_button")
+            ) {
+                Icon(Icons.Default.EditNote, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(if (language == SathiLanguage.BN) "নতুন কথোপকথন শুরু করুন" else "Start New Chat")
+            }
+
+            OutlinedButton(
+                onClick = onToggleFloating,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.BubbleChart, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    if (language == SathiLanguage.BN) {
+                        if (floatingRunning) "ভাসমান বাবল বন্ধ করুন" else "ভাসমান বাবল চালু করুন"
+                    } else {
+                        if (floatingRunning) "Turn Off Floating Orb" else "Enable Floating Orb"
+                    }
+                )
+            }
+        }
+
+        HorizontalDivider()
+
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            contentPadding = PaddingValues(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            if (pinned.isNotEmpty()) {
+                item {
+                    Text(
+                        text = if (language == SathiLanguage.BN) "চিহ্নিত কথোপকথন" else "Pinned Chats",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+                items(pinned, key = { "pin_${it.id}" }) { session ->
+                    DrawerSessionRow(
+                        session = session,
+                        selected = session.id == activeSessionId,
+                        onSelect = { onSelectSession(session) },
+                        onTogglePin = { onTogglePin(session) },
+                        onDelete = { onDeleteSession(session) }
+                    )
+                }
+            }
+
+            item {
+                Text(
+                    text = if (language == SathiLanguage.BN) "সাম্প্রতিক চ্যাট" else "Recent Chats",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                )
+            }
+
+            if (recent.isEmpty() && pinned.isEmpty()) {
+                item {
+                    Text(
+                        text = if (language == SathiLanguage.BN) {
+                            "এখনও কোনো সংরক্ষিত চ্যাট নেই। কথা বললেই এখানে যুক্ত হবে।"
+                        } else {
+                            "No saved chats yet. Start talking to save conversations here."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+            } else {
+                items(recent, key = { "rec_${it.id}" }) { session ->
+                    DrawerSessionRow(
+                        session = session,
+                        selected = session.id == activeSessionId,
+                        onSelect = { onSelectSession(session) },
+                        onTogglePin = { onTogglePin(session) },
+                        onDelete = { onDeleteSession(session) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DrawerSessionRow(
+    session: ChatSession,
+    selected: Boolean,
+    onSelect: () -> Unit,
+    onTogglePin: () -> Unit,
+    onDelete: () -> Unit
+) {
+    NavigationDrawerItem(
+        selected = selected,
+        onClick = onSelect,
+        icon = {
+            Icon(
+                imageVector = if (session.isPinned) Icons.Default.Bookmark else Icons.Default.ChatBubbleOutline,
+                contentDescription = null
+            )
+        },
+        label = {
+            Text(
+                text = session.title,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        },
+        badge = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = onTogglePin,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = if (session.isPinned) Icons.Default.Bookmark else Icons.Default.BookmarkBorder,
+                        contentDescription = "Pin chat",
+                        modifier = Modifier.size(18.dp),
+                        tint = if (session.isPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                IconButton(
+                    onClick = onDelete,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.DeleteOutline,
+                        contentDescription = "Delete chat",
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        },
+        colors = NavigationDrawerItemDefaults.colors(
+            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+        )
+    )
+}
+
+@Composable
 private fun SathiVoiceOrbBar(
     listening: Boolean,
     speaking: Boolean,
     liveActive: Boolean,
+    muted: Boolean,
     thinking: Boolean,
     mood: SathiMood,
     language: SathiLanguage,
     onOrbClick: () -> Unit,
+    onToggleMute: () -> Unit,
+    onOpenMedia: () -> Unit,
+    onQuickCamera: () -> Unit,
     onStopLive: () -> Unit
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "orb_pulse")
     val pulse by infiniteTransition.animateFloat(
         initialValue = 1f,
-        targetValue = if (listening || speaking || liveActive) 1.25f else 1.07f,
+        targetValue = if ((listening && !muted) || speaking || liveActive) 1.24f else 1.07f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = if (listening || speaking) 650 else 1700, easing = FastOutSlowInEasing),
+            animation = tween(durationMillis = if (listening || speaking) 620 else 1600, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "pulse_scale"
     )
 
     val glowColor = when {
+        muted -> MaterialTheme.colorScheme.outline
         listening -> MaterialTheme.colorScheme.secondary
         speaking -> when (mood) {
             SathiMood.HAPPY, SathiMood.PLAYFUL -> MoodHappyGlow
@@ -950,13 +1238,106 @@ private fun SathiVoiceOrbBar(
             .padding(vertical = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center
-        ) {
+        if (liveActive) {
+            // Gemini-Live Style Floating Pill Control Bar
+            Surface(
+                shape = RoundedCornerShape(32.dp),
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                tonalElevation = 4.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    FilledTonalIconButton(
+                        onClick = onOpenMedia,
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = "Share media or screen")
+                    }
+
+                    FilledTonalIconButton(
+                        onClick = onQuickCamera,
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(Icons.Default.CameraAlt, contentDescription = "Quick camera")
+                    }
+
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.size(64.dp)
+                    ) {
+                        Canvas(modifier = Modifier.fillMaxSize()) {
+                            val r = size.minDimension * 0.42f
+                            drawCircle(color = glowColor.copy(alpha = 0.22f), radius = r * pulse)
+                            drawCircle(
+                                color = glowColor.copy(alpha = 0.45f),
+                                radius = r * (0.88f + (pulse - 1f) * 0.5f),
+                                style = Stroke(width = 2.5.dp.toPx())
+                            )
+                        }
+                        FilledIconButton(
+                            onClick = onOrbClick,
+                            modifier = Modifier
+                                .size(52.dp)
+                                .testTag("mic_button"),
+                            shape = CircleShape,
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = glowColor,
+                                contentColor = Color.White
+                            )
+                        ) {
+                            when {
+                                thinking -> CircularProgressIndicator(
+                                    modifier = Modifier.size(22.dp),
+                                    color = Color.White,
+                                    strokeWidth = 2.5.dp
+                                )
+                                speaking -> Icon(Icons.Default.Stop, contentDescription = "Interrupt")
+                                else -> Icon(Icons.Default.GraphicEq, contentDescription = "Live orb")
+                            }
+                        }
+                    }
+
+                    FilledTonalIconButton(
+                        onClick = onToggleMute,
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("mute_live_mic_button"),
+                        colors = IconButtonDefaults.filledTonalIconButtonColors(
+                            containerColor = if (muted) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.secondaryContainer
+                        )
+                    ) {
+                        Icon(
+                            imageVector = if (muted) Icons.Default.MicOff else Icons.Default.Mic,
+                            contentDescription = if (muted) "Unmute microphone" else "Mute microphone"
+                        )
+                    }
+
+                    FilledIconButton(
+                        onClick = onStopLive,
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("end_live_button"),
+                        colors = IconButtonDefaults.filledIconButtonColors(
+                            containerColor = MaterialTheme.colorScheme.error,
+                            contentColor = MaterialTheme.colorScheme.onError
+                        )
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = "End Live")
+                    }
+                }
+            }
+        } else {
             Box(
                 contentAlignment = Alignment.Center,
-                modifier = Modifier.size(96.dp)
+                modifier = Modifier.size(92.dp)
             ) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val baseRadius = size.minDimension * 0.34f
@@ -974,7 +1355,7 @@ private fun SathiVoiceOrbBar(
                 FilledIconButton(
                     onClick = onOrbClick,
                     modifier = Modifier
-                        .size(68.dp)
+                        .size(66.dp)
                         .testTag("mic_button"),
                     shape = CircleShape,
                     colors = IconButtonDefaults.filledIconButtonColors(
@@ -991,45 +1372,29 @@ private fun SathiVoiceOrbBar(
                         speaking -> Icon(
                             imageVector = Icons.Default.Stop,
                             contentDescription = "Interrupt Sathi and speak",
-                            modifier = Modifier.size(32.dp)
+                            modifier = Modifier.size(30.dp)
                         )
                         listening -> Icon(
                             imageVector = Icons.Default.GraphicEq,
                             contentDescription = "Listening, tap to stop",
-                            modifier = Modifier.size(32.dp)
+                            modifier = Modifier.size(30.dp)
                         )
                         else -> Icon(
                             imageVector = Icons.Default.Mic,
                             contentDescription = "Tap to start live voice conversation",
-                            modifier = Modifier.size(32.dp)
+                            modifier = Modifier.size(30.dp)
                         )
                     }
                 }
-            }
-
-            if (liveActive) {
-                Spacer(modifier = Modifier.width(12.dp))
-                AssistChip(
-                    onClick = onStopLive,
-                    leadingIcon = {
-                        Icon(
-                            Icons.Default.Close,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    },
-                    label = {
-                        Text(if (language == SathiLanguage.BN) "লাইভ বন্ধ করুন" else "End Live")
-                    }
-                )
             }
         }
 
         val statusLabel = when {
             thinking -> if (language == SathiLanguage.BN) "সাথী ভাবছে..." else "Sathi is thinking..."
+            muted && liveActive -> if (language == SathiLanguage.BN) "মাইক মিউট আছে • চালু করতে মাইক চাপুন" else "Mic muted • Tap mic to unmute"
             speaking && liveActive -> if (language == SathiLanguage.BN) "লাইভ কথা • থামিয়ে বলতে ট্যাপ করুন" else "Live • Tap to interrupt"
             speaking -> if (language == SathiLanguage.BN) "বলছে — থামিয়ে কথা বলতে ট্যাপ করুন" else "Speaking — Tap to interrupt"
-            listening && liveActive -> if (language == SathiLanguage.BN) "লাইভ শুনছি... বলুন (স্বয়ংক্রিয় চলবে)" else "Live listening... speak freely"
+            listening && liveActive -> if (language == SathiLanguage.BN) "লাইভ শুনছি... অনর্গল কথা বলুন" else "Live listening... speak freely"
             listening -> if (language == SathiLanguage.BN) "শুনছি... বলুন" else "Listening... speak now"
             else -> if (language == SathiLanguage.BN) "একবার ট্যাপে লাইভ কথা শুরু করুন" else "Tap once for hands-free Live talk"
         }
@@ -1046,8 +1411,11 @@ private fun SathiVoiceOrbBar(
 @Composable
 private fun ChatBubbleCard(
     message: ChatMessage,
+    displayedText: String,
     language: SathiLanguage,
     onSpeak: () -> Unit,
+    onCopy: () -> Unit,
+    onReact: (Int) -> Unit,
     onOpenUrl: (String) -> Unit
 ) {
     val isUser = message.isUser
@@ -1056,7 +1424,7 @@ private fun ChatBubbleCard(
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
     ) {
         Card(
-            modifier = Modifier.widthIn(max = 330.dp),
+            modifier = Modifier.widthIn(max = 336.dp),
             colors = CardDefaults.cardColors(
                 containerColor = if (isUser) {
                     MaterialTheme.colorScheme.primary
@@ -1132,7 +1500,7 @@ private fun ChatBubbleCard(
                 }
 
                 Text(
-                    text = message.text,
+                    text = displayedText,
                     style = MaterialTheme.typography.bodyLarge,
                     color = if (isUser) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
                 )
@@ -1202,7 +1570,181 @@ private fun ChatBubbleCard(
                         }
                     }
                 }
+
+                if (!isUser) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Start,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(
+                            onClick = { onReact(1) },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (message.reaction == 1) Icons.Default.ThumbUp else Icons.Default.ThumbUpOffAlt,
+                                contentDescription = "Like response",
+                                modifier = Modifier.size(18.dp),
+                                tint = if (message.reaction == 1) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        IconButton(
+                            onClick = { onReact(-1) },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (message.reaction == -1) Icons.Default.ThumbDown else Icons.Default.ThumbDownOffAlt,
+                                contentDescription = "Dislike response",
+                                modifier = Modifier.size(18.dp),
+                                tint = if (message.reaction == -1) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        IconButton(
+                            onClick = onCopy,
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ContentCopy,
+                                contentDescription = "Copy response",
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        IconButton(
+                            onClick = onSpeak,
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.VolumeUp,
+                                contentDescription = "Speak aloud",
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
             }
         }
     }
 }
+
+@Composable
+private fun CenterSathiAiLogo(
+    isProminent: Boolean,
+    isActive: Boolean,
+    language: SathiLanguage,
+    modifier: Modifier = Modifier
+) {
+    val targetAlpha = if (isProminent) 0.94f else 0.22f
+    val animatedAlpha by animateFloatAsState(
+        targetValue = targetAlpha,
+        animationSpec = tween(durationMillis = 450),
+        label = "center_logo_alpha"
+    )
+    val transition = rememberInfiniteTransition(label = "center_logo_pulse")
+    val pulseScale by transition.animateFloat(
+        initialValue = 1.0f,
+        targetValue = if (isActive) 1.08f else 1.03f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = if (isActive) 1100 else 2400, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "center_logo_scale"
+    )
+
+    Column(
+        modifier = modifier
+            .alpha(animatedAlpha)
+            .testTag("center_ai_logo"),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .size(164.dp)
+                .graphicsLayer {
+                    scaleX = pulseScale
+                    scaleY = pulseScale
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            Color(0x55FFF59D),
+                            Color(0x4464B5F6),
+                            Color.Transparent
+                        )
+                    )
+                )
+            }
+
+            Surface(
+                modifier = Modifier
+                    .size(124.dp)
+                    .border(
+                        width = 2.5.dp,
+                        brush = Brush.verticalGradient(
+                            colors = listOf(
+                                Color(0xFFFFEE58),
+                                Color(0xFFFFFFFF),
+                                Color(0xFF42A5F5)
+                            )
+                        ),
+                        shape = CircleShape
+                    ),
+                shape = CircleShape,
+                shadowElevation = if (isProminent) 10.dp else 0.dp,
+                color = Color.Transparent
+            ) {
+                Image(
+                    painter = painterResource(id = R.drawable.img_sathi_ai_logo),
+                    contentDescription = if (language == SathiLanguage.BN) "সাথী এআই লোগো" else "Sathi AI Logo",
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(CircleShape),
+                    contentScale = ContentScale.Crop
+                )
+            }
+        }
+
+        if (isProminent) {
+            Spacer(modifier = Modifier.height(6.dp))
+            Surface(
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+                shape = RoundedCornerShape(50),
+                border = BorderStroke(
+                    width = 1.dp,
+                    brush = Brush.horizontalGradient(
+                        colors = listOf(
+                            Color(0xFFFFD54F),
+                            Color(0xFF42A5F5)
+                        )
+                    )
+                )
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AutoAwesome,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = if (language == SathiLanguage.BN) "সাথী এআই" else "Sathi AI",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+        }
+    }
+}
+

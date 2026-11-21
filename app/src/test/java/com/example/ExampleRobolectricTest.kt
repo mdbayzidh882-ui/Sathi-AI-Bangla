@@ -36,9 +36,12 @@ class ExampleRobolectricTest {
     val composeTestRule = createAndroidComposeRule<MainActivity>()
 
     @Test
-    fun `app opens directly on home screen with Sathi title, mic button, and media plus button`() {
+    fun `app opens directly on home screen with Sathi title, drawer, new chat, mic, and media plus button`() {
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithText("সাথী • Sathi").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("drawer_menu_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("new_chat_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("center_ai_logo").assertIsDisplayed()
         composeTestRule.onNodeWithTag("mic_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("attach_media_button").assertIsDisplayed()
     }
@@ -201,5 +204,50 @@ class ExampleRobolectricTest {
         val owner = UserProfile(userId = "u2", userName = "Bayzid", plan = "owner", planExpiresAt = 0L)
         assertEquals(PlanTier.OWNER, owner.effectivePlan())
         assertTrue(owner.hasPremiumAccess())
+    }
+
+    @Test
+    fun `chat sessions persist, pin at top, and save message reactions`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, SathiDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val repo = SathiLocalRepository(db.sathiDao())
+            val s1 = repo.createChatSession("u1", "খুলনার আবহাওয়া")
+            val s2 = repo.createChatSession("u1", "ইসলামের ইতিহাস")
+            repo.togglePinChatSession(s1.id, true)
+
+            val sessions = repo.observeChatSessions("u1").first()
+            assertEquals(2, sessions.size)
+            assertEquals(s1.id, sessions.first().id)
+            assertTrue(sessions.first().isPinned)
+
+            val aiMsg = com.example.model.ChatMessage(
+                id = "m_1",
+                isUser = false,
+                text = "খুলনায় আজ রৌদ্রোজ্জ্বল আবহাওয়া।",
+                sessionId = s1.id
+            )
+            repo.upsertChatMessage("u1", s1.id, aiMsg)
+            repo.updateMessageReaction("m_1", 1)
+
+            val loadedMsgs = repo.getMessagesForSessionOnce(s1.id)
+            assertEquals(1, loadedMsgs.size)
+            assertEquals(1, loadedMsgs.first().reaction)
+
+            val ai = SathiAiService()
+            val followUp = ai.generateCompanionReply(
+                userMessage = "আরও বলো",
+                language = SathiLanguage.BN,
+                userName = "বাইজিদ",
+                memories = emptyList(),
+                recentHistory = listOf(true to "বাংলাদেশের অর্থনীতি কেমন?")
+            ).getOrThrow()
+            assertEquals(PhoneActionType.WEB_SEARCH, followUp.actionType)
+            assertTrue(followUp.actionParam.contains("বাংলাদেশের অর্থনীতি"))
+        } finally {
+            db.close()
+        }
     }
 }

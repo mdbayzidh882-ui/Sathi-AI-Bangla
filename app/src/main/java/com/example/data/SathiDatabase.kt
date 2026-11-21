@@ -10,6 +10,8 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "user_profiles")
@@ -72,6 +74,32 @@ data class ActivityLogEntity(
     val target: String,
     val details: String,
     val createdAt: Long
+)
+
+@Entity(tableName = "chat_sessions")
+data class ChatSessionEntity(
+    @PrimaryKey val id: String,
+    val userId: String,
+    val title: String,
+    val isPinned: Boolean,
+    val createdAt: Long,
+    val updatedAt: Long
+)
+
+@Entity(tableName = "chat_messages")
+data class ChatMessageEntity(
+    @PrimaryKey val id: String,
+    val sessionId: String,
+    val userId: String,
+    val isUser: Boolean,
+    val text: String,
+    val moodCode: String,
+    val sourcesJson: String,
+    val actionLabel: String?,
+    val isOfflineReply: Boolean,
+    val mediaBadge: String?,
+    val reaction: Int,
+    val timestampMs: Long
 )
 
 @Dao
@@ -170,6 +198,49 @@ interface SathiDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertActivityLog(entity: ActivityLogEntity)
+
+    // --- Chat Sessions & Messages (Gemini-style Sidebar History & Pinned Chats) ---
+    @Query("SELECT * FROM chat_sessions WHERE userId = :uid ORDER BY isPinned DESC, updatedAt DESC")
+    fun observeChatSessions(uid: String): Flow<List<ChatSessionEntity>>
+
+    @Query("SELECT * FROM chat_sessions WHERE id = :sessionId LIMIT 1")
+    suspend fun getChatSessionOnce(sessionId: String): ChatSessionEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertChatSession(entity: ChatSessionEntity)
+
+    @Query("UPDATE chat_sessions SET title = :title, updatedAt = :updatedAt WHERE id = :sessionId")
+    suspend fun renameChatSession(sessionId: String, title: String, updatedAt: Long)
+
+    @Query("UPDATE chat_sessions SET updatedAt = :updatedAt WHERE id = :sessionId")
+    suspend fun touchChatSession(sessionId: String, updatedAt: Long)
+
+    @Query("UPDATE chat_sessions SET isPinned = :isPinned, updatedAt = :updatedAt WHERE id = :sessionId")
+    suspend fun updateChatSessionPinned(sessionId: String, isPinned: Boolean, updatedAt: Long)
+
+    @Query("DELETE FROM chat_sessions WHERE id = :sessionId")
+    suspend fun deleteChatSession(sessionId: String)
+
+    @Query("DELETE FROM chat_sessions WHERE userId = :uid")
+    suspend fun deleteAllChatSessionsForUser(uid: String)
+
+    @Query("SELECT * FROM chat_messages WHERE sessionId = :sessionId ORDER BY timestampMs ASC")
+    fun observeMessagesForSession(sessionId: String): Flow<List<ChatMessageEntity>>
+
+    @Query("SELECT * FROM chat_messages WHERE sessionId = :sessionId ORDER BY timestampMs ASC")
+    suspend fun getMessagesForSessionOnce(sessionId: String): List<ChatMessageEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertChatMessage(entity: ChatMessageEntity)
+
+    @Query("UPDATE chat_messages SET reaction = :reaction WHERE id = :messageId")
+    suspend fun updateMessageReaction(messageId: String, reaction: Int)
+
+    @Query("DELETE FROM chat_messages WHERE sessionId = :sessionId")
+    suspend fun deleteMessagesForSession(sessionId: String)
+
+    @Query("DELETE FROM chat_messages WHERE userId = :uid")
+    suspend fun deleteAllChatMessagesForUser(uid: String)
 }
 
 @Database(
@@ -178,9 +249,11 @@ interface SathiDao {
         UserMemoryEntity::class,
         PremiumCodeEntity::class,
         AppConfigEntity::class,
-        ActivityLogEntity::class
+        ActivityLogEntity::class,
+        ChatSessionEntity::class,
+        ChatMessageEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class SathiDatabase : RoomDatabase() {
@@ -190,6 +263,41 @@ abstract class SathiDatabase : RoomDatabase() {
         @Volatile
         private var instance: SathiDatabase? = null
 
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `chat_sessions` (
+                        `id` TEXT NOT NULL PRIMARY KEY,
+                        `userId` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `isPinned` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `chat_messages` (
+                        `id` TEXT NOT NULL PRIMARY KEY,
+                        `sessionId` TEXT NOT NULL,
+                        `userId` TEXT NOT NULL,
+                        `isUser` INTEGER NOT NULL,
+                        `text` TEXT NOT NULL,
+                        `moodCode` TEXT NOT NULL,
+                        `sourcesJson` TEXT NOT NULL,
+                        `actionLabel` TEXT,
+                        `isOfflineReply` INTEGER NOT NULL,
+                        `mediaBadge` TEXT,
+                        `reaction` INTEGER NOT NULL,
+                        `timestampMs` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun getInstance(context: Context): SathiDatabase {
             return instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
@@ -197,7 +305,7 @@ abstract class SathiDatabase : RoomDatabase() {
                     SathiDatabase::class.java,
                     "sathi_local_db"
                 )
-                    .fallbackToDestructiveMigration(dropAllTables = true)
+                    .addMigrations(MIGRATION_1_2)
                     .build()
                     .also { instance = it }
             }

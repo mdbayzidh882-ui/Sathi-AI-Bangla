@@ -23,6 +23,7 @@ import com.example.data.WebSearchService
 import com.example.model.ActivityLog
 import com.example.model.AppConfig
 import com.example.model.ChatMessage
+import com.example.model.ChatSession
 import com.example.model.CodeType
 import com.example.model.MemoryCategory
 import com.example.model.PendingConfirmation
@@ -39,11 +40,13 @@ import com.example.overlay.SathiScreenShareService
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -96,8 +99,24 @@ class SathiViewModel(
     val localSettings: StateFlow<LocalSettingsState> = preferences.settingsFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), LocalSettingsState())
 
+    val chatSessions: StateFlow<List<ChatSession>> = repository.observeChatSessions(currentUserId)
+        .catch { error ->
+            if (error is CancellationException) throw error
+            emit(emptyList())
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+
+    private val _activeSessionId = MutableStateFlow<String?>(null)
+    val activeSessionId: StateFlow<String?> = _activeSessionId.asStateFlow()
+
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
+
+    private val _streamingMessageId = MutableStateFlow<String?>(null)
+    val streamingMessageId: StateFlow<String?> = _streamingMessageId.asStateFlow()
+
+    private val _streamingCharLimit = MutableStateFlow(Int.MAX_VALUE)
+    val streamingCharLimit: StateFlow<Int> = _streamingCharLimit.asStateFlow()
 
     private val _isThinking = MutableStateFlow(false)
     val isThinking: StateFlow<Boolean> = _isThinking.asStateFlow()
@@ -140,18 +159,31 @@ class SathiViewModel(
 
     private var offlineDownloadJob: Job? = null
     private var adminObserverJob: Job? = null
+    private var streamingJob: Job? = null
 
     init {
         viewModelScope.launch {
             repository.ensureUserProfile(currentUserId, displayName, userEmail)
             _isOwnerAdmin.value = repository.isUserAdminDocPresent()
-            seedWelcomeMessage()
+            val existingSessions = repository.observeChatSessions(currentUserId).first()
+            if (existingSessions.isNotEmpty()) {
+                val latest = existingSessions.first()
+                _activeSessionId.value = latest.id
+                val loaded = repository.getMessagesForSessionOnce(latest.id)
+                if (loaded.isNotEmpty()) {
+                    _messages.value = loaded
+                } else {
+                    seedWelcomeMessage()
+                }
+            } else {
+                seedWelcomeMessage()
+            }
         }
     }
 
     private fun seedWelcomeMessage() {
-        if (_messages.value.isNotEmpty()) return
         val name = displayName.ifBlank { "বন্ধু" }
+        _streamingMessageId.value = null
         _messages.value = listOf(
             ChatMessage(
                 id = UUID.randomUUID().toString(),
@@ -160,6 +192,106 @@ class SathiViewModel(
                 mood = SathiMood.WARM
             )
         )
+    }
+
+    fun startNewChat() {
+        streamingJob?.cancel()
+        _streamingMessageId.value = null
+        _activeSessionId.value = null
+        _messages.value = emptyList()
+        seedWelcomeMessage()
+    }
+
+    fun selectChatSession(sessionId: String) {
+        viewModelScope.launch {
+            streamingJob?.cancel()
+            _streamingMessageId.value = null
+            _activeSessionId.value = sessionId
+            val loaded = repository.getMessagesForSessionOnce(sessionId)
+            if (loaded.isNotEmpty()) {
+                _messages.value = loaded
+            } else {
+                seedWelcomeMessage()
+            }
+        }
+    }
+
+    fun togglePinChatSession(session: ChatSession) {
+        viewModelScope.launch {
+            repository.togglePinChatSession(session.id, !session.isPinned)
+        }
+    }
+
+    fun deleteChatSession(session: ChatSession) {
+        viewModelScope.launch {
+            repository.deleteChatSession(session.id)
+            if (_activeSessionId.value == session.id) {
+                startNewChat()
+            }
+        }
+    }
+
+    fun reactToMessage(messageId: String, reaction: Int) {
+        val currentList = _messages.value
+        val existing = currentList.firstOrNull { it.id == messageId } ?: return
+        val nextReaction = if (existing.reaction == reaction) 0 else reaction
+        _messages.value = currentList.map { msg ->
+            if (msg.id == messageId) msg.copy(reaction = nextReaction) else msg
+        }
+        viewModelScope.launch {
+            if (_activeSessionId.value != null) {
+                repository.updateMessageReaction(messageId, nextReaction)
+            }
+        }
+    }
+
+    fun toggleLiveMute() {
+        voiceController.toggleMute()
+    }
+
+    fun saveCustomGeminiApiKey(apiKey: String) {
+        viewModelScope.launch {
+            preferences.saveCustomGeminiApiKey(apiKey)
+            val lang = currentLanguage()
+            _bannerState.value = UiBannerState.Info(
+                if (apiKey.isBlank()) {
+                    if (lang == SathiLanguage.BN) "ক্লাউড এআই কী মুছে ফেলা হয়েছে।" else "Cloud AI key cleared."
+                } else {
+                    if (lang == SathiLanguage.BN) "ক্লাউড এআই কী সুরক্ষিতভাবে সংরক্ষিত হয়েছে!" else "Cloud AI key saved securely!"
+                }
+            )
+        }
+    }
+
+    private suspend fun ensureActiveSessionWithTitle(firstPrompt: String): String {
+        val existing = _activeSessionId.value
+        if (!existing.isNullOrBlank()) return existing
+        val cleanTitle = firstPrompt.trim().replace(Regex("\\s+"), " ").take(42)
+            .ifBlank { if (currentLanguage() == SathiLanguage.BN) "নতুন কথোপকথন" else "New Chat" }
+        val session = repository.createChatSession(currentUserId, cleanTitle)
+        _activeSessionId.value = session.id
+        return session.id
+    }
+
+    private fun startStreamingReveal(messageId: String, fullText: String) {
+        streamingJob?.cancel()
+        if (fullText.length <= 24) {
+            _streamingMessageId.value = null
+            return
+        }
+        _streamingMessageId.value = messageId
+        _streamingCharLimit.value = 1
+        streamingJob = viewModelScope.launch {
+            val step = (fullText.length / 28).coerceIn(3, 14)
+            var cursor = step
+            while (cursor < fullText.length) {
+                _streamingCharLimit.value = cursor
+                delay(24L)
+                cursor += step
+            }
+            _streamingCharLimit.value = Int.MAX_VALUE
+            _streamingMessageId.value = null
+        }
     }
 
     fun currentLanguage(): SathiLanguage =
@@ -204,6 +336,7 @@ class SathiViewModel(
     fun analyzeHomePhoto(bitmap: Bitmap, question: String) {
         val lang = currentLanguage()
         val voice = currentVoice()
+        val apiKey = localSettings.value.customGeminiApiKey
         val promptLabel = question.trim().ifBlank {
             if (lang == SathiLanguage.BN) "এই ছবিটি বিশ্লেষণ করো" else "Analyze this photo"
         }
@@ -213,26 +346,32 @@ class SathiViewModel(
             (320f * bitmap.height / bitmap.width.coerceAtLeast(1)).toInt().coerceAtLeast(160),
             true
         )
-        _messages.value = _messages.value + ChatMessage(
+        val userMsg = ChatMessage(
             id = UUID.randomUUID().toString(),
             isUser = true,
             text = promptLabel,
             mediaThumbnail = thumb,
             mediaBadge = if (lang == SathiLanguage.BN) "ছবি" else "Photo"
         )
+        _messages.value = _messages.value + userMsg
         _isThinking.value = true
         viewModelScope.launch {
             try {
-                val res = aiService.analyzeImage(bitmap, question, lang)
+                val sid = ensureActiveSessionWithTitle(promptLabel)
+                repository.upsertChatMessage(currentUserId, sid, userMsg)
+                val res = aiService.analyzeImage(bitmap, question, lang, isScreenCapture = false, apiKey = apiKey)
                 val reply = res.getOrElse {
                     if (lang == SathiLanguage.BN) "ছবিটি বিশ্লেষণ করা যায়নি।" else "Could not analyze photo."
                 }
-                _messages.value = _messages.value + ChatMessage(
+                val aiMsg = ChatMessage(
                     id = UUID.randomUUID().toString(),
                     isUser = false,
                     text = reply,
                     mood = SathiMood.WARM
                 )
+                _messages.value = _messages.value + aiMsg
+                repository.upsertChatMessage(currentUserId, sid, aiMsg)
+                startStreamingReveal(aiMsg.id, reply)
                 voiceController.speak(reply, lang, voice, SathiMood.WARM)
             } finally {
                 _isThinking.value = false
@@ -243,6 +382,7 @@ class SathiViewModel(
     fun analyzeSharedScreen(question: String = "") {
         val lang = currentLanguage()
         val voice = currentVoice()
+        val apiKey = localSettings.value.customGeminiApiKey
         val promptLabel = question.trim().ifBlank {
             if (lang == SathiLanguage.BN) "আমার শেয়ার করা স্ক্রিনটি দেখো" else "Look at my shared screen"
         }
@@ -265,23 +405,29 @@ class SathiViewModel(
                     (240f * frame.height / frame.width.coerceAtLeast(1)).toInt().coerceAtLeast(160),
                     true
                 )
-                _messages.value = _messages.value + ChatMessage(
+                val userMsg = ChatMessage(
                     id = UUID.randomUUID().toString(),
                     isUser = true,
                     text = promptLabel,
                     mediaThumbnail = thumb,
                     mediaBadge = if (lang == SathiLanguage.BN) "লাইভ স্ক্রিন" else "Live Screen"
                 )
-                val res = aiService.analyzeImage(frame, question, lang, isScreenCapture = true)
+                _messages.value = _messages.value + userMsg
+                val sid = ensureActiveSessionWithTitle(promptLabel)
+                repository.upsertChatMessage(currentUserId, sid, userMsg)
+                val res = aiService.analyzeImage(frame, question, lang, isScreenCapture = true, apiKey = apiKey)
                 val reply = res.getOrElse {
                     if (lang == SathiLanguage.BN) "স্ক্রিনটি বিশ্লেষণ করা যায়নি।" else "Could not analyze screen."
                 }
-                _messages.value = _messages.value + ChatMessage(
+                val aiMsg = ChatMessage(
                     id = UUID.randomUUID().toString(),
                     isUser = false,
                     text = reply,
                     mood = SathiMood.WARM
                 )
+                _messages.value = _messages.value + aiMsg
+                repository.upsertChatMessage(currentUserId, sid, aiMsg)
+                startStreamingReveal(aiMsg.id, reply)
                 voiceController.speak(reply, lang, voice, SathiMood.WARM)
             } finally {
                 _isThinking.value = false
@@ -355,13 +501,16 @@ class SathiViewModel(
 
         viewModelScope.launch {
             try {
+                val sid = ensureActiveSessionWithTitle(text)
+                repository.upsertChatMessage(currentUserId, sid, userMsg)
+
                 val settings = localSettings.value
                 val online = networkMonitor.isOnline()
 
                 if (settings.offlineModeEnabled || !online) {
                     if (settings.offlinePackState == OfflinePackState.INSTALLED) {
                         val offlineTurn = offlineEngine.respondOffline(text, lang, userName)
-                        handleTurnOutput(offlineTurn, emptyList(), isOffline = true, speakReply = speakReply, lang = lang, voice = voice)
+                        handleTurnOutput(offlineTurn, emptyList(), isOffline = true, speakReply = speakReply, lang = lang, voice = voice, sessionId = sid)
                     } else if (!online) {
                         val msg = if (lang == SathiLanguage.BN) {
                             "ইন্টারনেট সংযোগ পাওয়া যাচ্ছে না। অফলাইন চ্যাট ব্যবহার করতে সেটিংস থেকে অফলাইন প্যাক ডাউনলোড করুন অথবা ওয়াই-ফাই/ডাটা চালু করুন।"
@@ -370,9 +519,8 @@ class SathiViewModel(
                         }
                         appendSathiErrorReply(msg, lang, voice, speakReply)
                     } else {
-                        // Online but offline mode toggle requested without pack
                         val offlineTurn = offlineEngine.respondOffline(text, lang, userName)
-                        handleTurnOutput(offlineTurn, emptyList(), isOffline = true, speakReply = speakReply, lang = lang, voice = voice)
+                        handleTurnOutput(offlineTurn, emptyList(), isOffline = true, speakReply = speakReply, lang = lang, voice = voice, sessionId = sid)
                     }
                     return@launch
                 }
@@ -386,15 +534,24 @@ class SathiViewModel(
                 ) {
                     val frame = SathiScreenShareService.captureLatestFrame()
                     if (frame != null) {
-                        val analysis = aiService.analyzeImage(frame, text, lang, isScreenCapture = true).getOrElse {
+                        val analysis = aiService.analyzeImage(
+                            bitmap = frame,
+                            question = text,
+                            language = lang,
+                            isScreenCapture = true,
+                            apiKey = settings.customGeminiApiKey
+                        ).getOrElse {
                             if (lang == SathiLanguage.BN) "স্ক্রিনটি পড়া যায়নি।" else "Could not read screen."
                         }
-                        _messages.value = _messages.value + ChatMessage(
+                        val aiMsg = ChatMessage(
                             id = UUID.randomUUID().toString(),
                             isUser = false,
                             text = analysis,
                             mood = SathiMood.WARM
                         )
+                        _messages.value = _messages.value + aiMsg
+                        repository.upsertChatMessage(currentUserId, sid, aiMsg)
+                        startStreamingReveal(aiMsg.id, analysis)
                         if (speakReply) {
                             voiceController.speak(analysis, lang, voice, SathiMood.WARM)
                         }
@@ -404,7 +561,7 @@ class SathiViewModel(
 
                 // Online Companion AI Engine
                 val allowMemory = (profile?.hasPremiumAccess() == true) || globalConfig.value.longTermMemoryForFree
-                val recentHistory = _messages.value.takeLast(7).map { it.isUser to it.text }
+                val recentHistory = _messages.value.takeLast(8).map { it.isUser to it.text }
 
                 val initialResult = aiService.generateCompanionReply(
                     userMessage = text,
@@ -413,7 +570,8 @@ class SathiViewModel(
                     memories = memories.value,
                     recentHistory = recentHistory,
                     webSources = emptyList(),
-                    allowLongTermMemory = allowMemory
+                    allowLongTermMemory = allowMemory,
+                    apiKey = settings.customGeminiApiKey
                 )
 
                 val turn = initialResult.getOrElse { err ->
@@ -434,9 +592,10 @@ class SathiViewModel(
                             memories = memories.value,
                             recentHistory = recentHistory,
                             webSources = sources,
-                            allowLongTermMemory = allowMemory
+                            allowLongTermMemory = allowMemory,
+                            apiKey = settings.customGeminiApiKey
                         ).getOrElse { turn }
-                        handleTurnOutput(groundedResult, sources, isOffline = false, speakReply = speakReply, lang = lang, voice = voice)
+                        handleTurnOutput(groundedResult, sources, isOffline = false, speakReply = speakReply, lang = lang, voice = voice, sessionId = sid)
                     } else {
                         val fallbackTurn = turn.copy(
                             replyText = if (lang == SathiLanguage.BN) {
@@ -446,10 +605,10 @@ class SathiViewModel(
                             },
                             actionType = PhoneActionType.NONE
                         )
-                        handleTurnOutput(fallbackTurn, emptyList(), isOffline = false, speakReply = speakReply, lang = lang, voice = voice)
+                        handleTurnOutput(fallbackTurn, emptyList(), isOffline = false, speakReply = speakReply, lang = lang, voice = voice, sessionId = sid)
                     }
                 } else {
-                    handleTurnOutput(turn, emptyList(), isOffline = false, speakReply = speakReply, lang = lang, voice = voice)
+                    handleTurnOutput(turn, turn.groundedSources, isOffline = false, speakReply = speakReply, lang = lang, voice = voice, sessionId = sid)
                 }
             } finally {
                 _isThinking.value = false
@@ -463,7 +622,8 @@ class SathiViewModel(
         isOffline: Boolean,
         speakReply: Boolean,
         lang: SathiLanguage,
-        voice: SathiVoiceProfile
+        voice: SathiVoiceProfile,
+        sessionId: String
     ) {
         _activeMood.value = turn.mood
 
@@ -501,9 +661,12 @@ class SathiViewModel(
             mood = turn.mood,
             sources = sources,
             actionLabel = actionLabel,
-            isOfflineReply = isOffline
+            isOfflineReply = isOffline,
+            sessionId = sessionId
         )
         _messages.value = _messages.value + replyMsg
+        repository.upsertChatMessage(currentUserId, sessionId, replyMsg)
+        startStreamingReveal(replyMsg.id, turn.replyText)
         if (speakReply) {
             voiceController.speak(turn.replyText, lang, voice, turn.mood)
         }
@@ -615,6 +778,7 @@ class SathiViewModel(
         viewModelScope.launch {
             repository.deleteAllUserData(currentUserId)
             preferences.clearAll()
+            _activeSessionId.value = null
             _messages.value = emptyList()
             seedWelcomeMessage()
             val lang = currentLanguage()
@@ -917,6 +1081,7 @@ class SathiViewModel(
     override fun onCleared() {
         super.onCleared()
         voiceController.release()
+        streamingJob?.cancel()
         offlineDownloadJob?.cancel()
         adminObserverJob?.cancel()
     }
