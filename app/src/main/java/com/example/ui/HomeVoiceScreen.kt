@@ -62,6 +62,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
@@ -195,8 +196,22 @@ fun HomeVoiceScreen(
     var typedInput by remember { mutableStateOf("") }
     var showMicRationale by remember { mutableStateOf(false) }
     var showMediaSheet by remember { mutableStateOf(false) }
+    var showImageCreateDialog by remember { mutableStateOf(false) }
+    var imageCreatePrompt by remember { mutableStateOf("") }
+    var contactsPermGranted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) ==
+                PackageManager.PERMISSION_GRANTED
+        )
+    }
     var showOverlayDialog by remember { mutableStateOf(false) }
     var showAccessibilityDisclosure by remember { mutableStateOf(false) }
+
+    val contactsPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        contactsPermGranted = granted
+    }
 
     val screenShareLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -363,6 +378,28 @@ fun HomeVoiceScreen(
                             homePhotoPickerLauncher.launch(
                                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                             )
+                        }
+                )
+                ListItem(
+                    headlineContent = {
+                        Text(if (language == SathiLanguage.BN) "ছবি তৈরি করুন (নমুনা প্রিভিউ)" else "Create Image (Preview)")
+                    },
+                    supportingContent = {
+                        Text(
+                            if (language == SathiLanguage.BN) "যেকোনো বর্ণনা লিখে হালকা নমুনা ছবি প্রিভিউ তৈরি করুন"
+                            else "Generate a lightweight sample preview card from your prompt"
+                        )
+                    },
+                    leadingContent = {
+                        Icon(Icons.Default.Image, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary)
+                    },
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(14.dp))
+                        .testTag("create_image_option")
+                        .clickable {
+                            showMediaSheet = false
+                            imageCreatePrompt = typedInput.trim()
+                            showImageCreateDialog = true
                         }
                 )
                 ListItem(
@@ -610,7 +647,65 @@ fun HomeVoiceScreen(
         )
     }
 
+    if (showImageCreateDialog) {
+        AlertDialog(
+            onDismissRequest = { showImageCreateDialog = false },
+            icon = { Icon(Icons.Default.Image, contentDescription = null) },
+            title = {
+                Text(if (language == SathiLanguage.BN) "নমুনা ছবি তৈরি করুন" else "Create Sample Image Preview")
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = if (language == SathiLanguage.BN) {
+                            "কোন বিষয়ের ছবি দেখতে চান লিখুন। (রিয়েল এআই ছবি তৈরির জন্য Firebase AI Logic সংযোগ প্রয়োজন — এখন নমুনা প্রিভিউ তৈরি হবে।)"
+                        } else {
+                            "Describe the image you want. (Full AI image generation requires Firebase AI Logic — generates a labeled sample preview.)"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = imageCreatePrompt,
+                        onValueChange = { imageCreatePrompt = it },
+                        label = { Text(if (language == SathiLanguage.BN) "ছবির বর্ণনা লিখুন" else "Image description") },
+                        placeholder = { Text(if (language == SathiLanguage.BN) "যেমন: নদীর ধারে সূর্যাস্ত" else "e.g., Sunset over river") },
+                        singleLine = false,
+                        maxLines = 3,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("home_image_prompt_input")
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val p = imageCreatePrompt.trim()
+                        showImageCreateDialog = false
+                        imageCreatePrompt = ""
+                        typedInput = ""
+                        viewModel.generateImageFromPrompt(p, addToChat = true)
+                    },
+                    enabled = imageCreatePrompt.isNotBlank(),
+                    modifier = Modifier.testTag("home_image_generate_confirm")
+                ) {
+                    Text(if (language == SathiLanguage.BN) "তৈরি করুন" else "Generate")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showImageCreateDialog = false }) {
+                    Text(if (language == SathiLanguage.BN) "বাতিল" else "Cancel")
+                }
+            }
+        )
+    }
+
     pendingConfirmation?.let { confirm ->
+        var editedTarget by remember(confirm) { mutableStateOf(confirm.target) }
+        var editedRecipient by remember(confirm) { mutableStateOf(confirm.recipientName) }
+        var editedMessage by remember(confirm) { mutableStateOf(confirm.messageBody) }
+
         AlertDialog(
             onDismissRequest = { viewModel.dismissPendingAction() },
             icon = {
@@ -628,48 +723,113 @@ fun HomeVoiceScreen(
                     if (language == SathiLanguage.BN) {
                         when (confirm.type) {
                             PhoneActionType.CALL_CONFIRM -> "কল করার অনুমতি দিন"
-                            PhoneActionType.SOCIAL_MESSAGE_CONFIRM -> "${confirm.target}-এ লেখা পাঠানোর অনুমতি"
+                            PhoneActionType.SOCIAL_MESSAGE_CONFIRM -> "${confirm.target}-এ লেখা ও প্রাপক যাচাই করুন"
                             else -> "মেসেজ পাঠানোর অনুমতি দিন"
                         }
                     } else {
                         when (confirm.type) {
                             PhoneActionType.CALL_CONFIRM -> "Confirm Phone Call"
-                            PhoneActionType.SOCIAL_MESSAGE_CONFIRM -> "Confirm ${confirm.target} Message"
+                            PhoneActionType.SOCIAL_MESSAGE_CONFIRM -> "Review ${confirm.target} Message"
                             else -> "Confirm Message"
                         }
                     }
                 )
             },
             text = {
-                val targetLabel = confirm.target.ifBlank {
-                    if (language == SathiLanguage.BN) "(ফোন ডায়ালার)" else "(Phone Dialer)"
-                }
-                Text(
-                    if (language == SathiLanguage.BN) {
-                        when (confirm.type) {
-                            PhoneActionType.SOCIAL_MESSAGE_CONFIRM ->
-                                "অ্যাপ/প্ল্যাটফর্ম: $targetLabel\nপ্রস্তুত বার্তা/কমেন্ট:\n\"${confirm.messageBody}\"\n\nনিশ্চিত করলে $targetLabel খুলে যাবে ও লেখাটি কপি থাকবে।"
-                            else ->
-                                "নম্বর/প্রাপক: $targetLabel" +
-                                    if (confirm.messageBody.isNotBlank()) "\nবার্তা: ${confirm.messageBody}" else ""
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    when (confirm.type) {
+                        PhoneActionType.SOCIAL_MESSAGE_CONFIRM -> {
+                            Text(
+                                text = if (language == SathiLanguage.BN) {
+                                    "প্ল্যাটফর্ম: ${confirm.target} (লেখা কপি হয়ে অ্যাপ খুলবে)"
+                                } else {
+                                    "Platform: ${confirm.target} (text copied when opened)"
+                                },
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            OutlinedTextField(
+                                value = editedRecipient,
+                                onValueChange = { editedRecipient = it },
+                                label = {
+                                    Text(
+                                        if (language == SathiLanguage.BN) "বন্ধুর নাম বা ফোন নম্বর (ঐচ্ছিক)"
+                                        else "Friend name or phone (optional)"
+                                    )
+                                },
+                                singleLine = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("confirm_recipient_input")
+                            )
+                            OutlinedTextField(
+                                value = editedMessage,
+                                onValueChange = { editedMessage = it },
+                                label = {
+                                    Text(
+                                        if (language == SathiLanguage.BN) "এসএমএস / কমেন্ট / রিপ্লাই লেখা"
+                                        else "Message / Comment / Reply text"
+                                    )
+                                },
+                                minLines = 2,
+                                maxLines = 4,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("confirm_message_input")
+                            )
+                            if (!contactsPermGranted && editedRecipient.any { !it.isDigit() && it != '+' } &&
+                                confirm.target.equals("WhatsApp", ignoreCase = true)
+                            ) {
+                                TextButton(
+                                    onClick = { contactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS) }
+                                ) {
+                                    Text(
+                                        if (language == SathiLanguage.BN) "ফোনবুক থেকে বন্ধুর নম্বর খুঁজতে অনুমতি দিন"
+                                        else "Allow Contacts to look up friend's number"
+                                    )
+                                }
+                            }
                         }
-                    } else {
-                        when (confirm.type) {
-                            PhoneActionType.SOCIAL_MESSAGE_CONFIRM ->
-                                "Platform: $targetLabel\nPrepared text:\n\"${confirm.messageBody}\""
-                            else ->
-                                "Recipient: $targetLabel" +
-                                    if (confirm.messageBody.isNotBlank()) "\nMessage: ${confirm.messageBody}" else ""
+                        PhoneActionType.SMS_CONFIRM -> {
+                            OutlinedTextField(
+                                value = editedTarget,
+                                onValueChange = { editedTarget = it },
+                                label = { Text(if (language == SathiLanguage.BN) "প্রাপকের নম্বর" else "Recipient number") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            OutlinedTextField(
+                                value = editedMessage,
+                                onValueChange = { editedMessage = it },
+                                label = { Text(if (language == SathiLanguage.BN) "বার্তা" else "Message") },
+                                minLines = 2,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                        else -> {
+                            OutlinedTextField(
+                                value = editedTarget,
+                                onValueChange = { editedTarget = it },
+                                label = { Text(if (language == SathiLanguage.BN) "ফোন নম্বর" else "Phone number") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
                         }
                     }
-                )
+                }
             },
             confirmButton = {
                 Button(
-                    onClick = { viewModel.confirmPendingAction() },
+                    onClick = {
+                        viewModel.confirmPendingAction(
+                            editedTarget = editedTarget,
+                            editedMessage = editedMessage,
+                            editedRecipient = editedRecipient
+                        )
+                    },
                     modifier = Modifier.testTag("confirm_action_button")
                 ) {
-                    Text(if (language == SathiLanguage.BN) "নিশ্চিত করুন" else "Confirm")
+                    Text(if (language == SathiLanguage.BN) "নিশ্চিত করুন ও খুলুন" else "Confirm & Open")
                 }
             },
             dismissButton = {

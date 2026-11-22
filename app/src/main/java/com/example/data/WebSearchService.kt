@@ -42,59 +42,111 @@ class WebSearchService {
                 }
             }
 
-            // 3. Live currency exchange rates (USD/EUR/SAR/AED/INR to BDT)
+            // 3. Live currency exchange rates (USD/EUR/GBP/SAR/AED/MYR/SGD/INR to BDT)
             if (isCurrencyQuery(lower)) {
-                fetchExchangeRateSource(trimmed, language)?.let { rateSource ->
+                fetchExchangeRateSource(language)?.let { rateSource ->
                     return@withContext listOf(rateSource)
                 }
             }
 
-            // 4. Live news / sports / scores -> Google News RSS for Bangladesh + Global
             val results = mutableListOf<WebSource>()
+
+            // 4. Live news / sports / scores -> Google News RSS for Bangladesh + Global
             if (isNewsOrScoreQuery(lower)) {
                 results.addAll(fetchGoogleNewsRss(trimmed, language))
             }
 
-            // 4. Multi-engine web search (DuckDuckGo Instant + DuckDuckGo Web + Wikipedia BN/EN + News fallback)
-            val cleanTopic = extractSearchTopic(trimmed).ifBlank { trimmed.take(80) }
+            // 5. Multi-engine web search (Bing RSS + Wikipedia Extracts + Wikidata + DuckDuckGo JSON + News fallback)
+            val cleanTopic = extractSearchTopic(trimmed).ifBlank { trimmed.take(90) }
+            val normalizedStem = stripBengaliSuffixes(cleanTopic)
+            val wikiLang = if (language == SathiLanguage.BN || cleanTopic.any { it in '\u0980'..'\u09FF' }) "bn" else "en"
+
             if (cleanTopic.length >= 2) {
                 fetchDuckDuckGoSource(cleanTopic)?.let { results.add(it) }
 
-                if (results.size < 3) {
-                    results.addAll(fetchDuckDuckGoWebResults(trimmed, language))
+                // Wikipedia REST exact + Generator Extracts (returns clean 4-sentence intro paragraphs!)
+                results.addAll(fetchWikipediaExtracts(normalizedStem.ifBlank { cleanTopic }, wikiLang))
+                if (normalizedStem != cleanTopic && results.size < 2) {
+                    results.addAll(fetchWikipediaExtracts(cleanTopic, wikiLang))
                 }
 
-                val wikiLang = if (language == SathiLanguage.BN || cleanTopic.any { it in '\u0980'..'\u09FF' }) "bn" else "en"
+                // Broad live web results via Bing Search RSS (fast XML, zero JS/CAPTCHA block)
                 if (results.size < 3) {
-                    results.addAll(fetchWikipediaSources(cleanTopic, wikiLang))
+                    results.addAll(fetchBingSearchRss(trimmed, language))
                 }
+
+                // Wikidata entity facts for people, places, terms, concepts
+                if (results.size < 3) {
+                    results.addAll(fetchWikidataEntities(normalizedStem.ifBlank { cleanTopic }, wikiLang))
+                }
+
+                // English Wikipedia fallback if Bengali query has more detail in English
                 if (results.size < 2 && wikiLang == "bn") {
-                    results.addAll(fetchWikipediaSources(cleanTopic, "en"))
+                    results.addAll(fetchWikipediaExtracts(cleanTopic, "en"))
                 }
+
+                // Google News RSS final live web fallback
                 if (results.isEmpty()) {
                     results.addAll(fetchGoogleNewsRss(cleanTopic, language))
                 }
             }
 
-            results.distinctBy { it.url }.take(4)
+            val tokens = normalizedStem.lowercase()
+                .split(Regex("\\s+"))
+                .filter { it.length >= 2 }
+
+            results
+                .distinctBy { it.url.ifBlank { it.title } }
+                .sortedByDescending { src -> scoreRelevance(src, tokens) }
+                .take(4)
         }
+
+    private fun scoreRelevance(source: WebSource, tokens: List<String>): Int {
+        if (tokens.isEmpty()) return 1
+        val titleLower = source.title.lowercase()
+        val bodyLower = source.snippet.lowercase()
+        var score = 0
+        tokens.forEach { t ->
+            if (titleLower.contains(t)) score += 3
+            if (bodyLower.contains(t)) score += 1
+        }
+        return score
+    }
 
     private fun extractSearchTopic(raw: String): String {
         val stopWords = setOf(
-            "সার্চ", "খুঁজো", "খুঁজে", "দাও", "বলো", "জানাও", "দেখো", "গুগল", "অনলাইন",
-            "সম্পর্কে", "বিষয়ে", "বিষয়ে", "কি", "কী", "কে", "কেন", "কবে", "কোথায়", "কোথায়",
-            "কিভাবে", "কীভাবে", "হলো", "হল", "হয়", "হয়", "একটু", "দয়া", "করে",
+            "সার্চ", "খুঁজো", "খুঁজে", "দাও", "বলো", "বলুন", "বলে", "জানাও", "জানতে", "চাই",
+            "দেখো", "দেখাও", "গুগল", "গুগলে", "অনলাইন", "অনলাইনে", "পারো", "পারবে",
+            "সম্পর্কে", "বিষয়ে", "বিষয়ে", "নিয়ে", "নিয়ে", "কি", "কী", "কে", "কেন", "কবে",
+            "কোথায়", "কোথায়", "কীভাবে", "কিভাবে", "কোন", "কোনটি", "কয়টি", "কয়টি", "কত",
+            "কতটি", "হলো", "হল", "হয়", "হয়", "একটু", "দয়া", "করে", "আমাকে", "আমাদের",
+            "দিয়ে", "দিয়ে", "থেকে", "এর", "এবং", "ও", "বা",
             "search", "google", "find", "tell", "me", "about", "what", "who", "where",
-            "when", "why", "how", "is", "was", "are", "the", "a", "an", "in", "of", "for", "please"
+            "when", "why", "how", "many", "much", "which", "is", "was", "are", "were",
+            "do", "does", "did", "can", "you", "explain", "define", "meaning", "of",
+            "the", "a", "an", "in", "on", "for", "to", "with", "please"
         )
         return raw
-            .replace(Regex("[?,!।\"']+"), " ")
+            .replace(Regex("[?,!।\"'()]+"), " ")
             .trim()
             .split(Regex("\\s+"))
             .filter { token -> token.lowercase() !in stopWords }
             .joinToString(" ")
             .trim()
-            .take(80)
+            .take(90)
+    }
+
+    private fun stripBengaliSuffixes(topic: String): String {
+        val suffixes = listOf("গুলোর", "গুলো", "দেরকে", "দের", "য়ের", "য়ের", "ের", "তে", "য়ে", "য়ে")
+        return topic.split(Regex("\\s+"))
+            .joinToString(" ") { word ->
+                if (word.length <= 3) word
+                else {
+                    val matched = suffixes.firstOrNull { word.endsWith(it) && word.length - it.length >= 2 }
+                    if (matched != null) word.dropLast(matched.length) else word
+                }
+            }
+            .trim()
     }
 
     private fun isWeatherQuery(lower: String): Boolean =
@@ -105,9 +157,10 @@ class WebSearchService {
     private fun isCurrencyQuery(lower: String): Boolean =
         lower.contains("dollar") || lower.contains("usd") || lower.contains("bdt") ||
             lower.contains("euro") || lower.contains("riyal") || lower.contains("dirham") ||
-            lower.contains("exchange rate") || lower.contains("currency") ||
-            lower.contains("ডলার") || lower.contains("রিয়াল") || lower.contains("রিয়াল") ||
-            lower.contains("দিরহাম") || lower.contains("ইউরো") || lower.contains("পাউন্ড") ||
+            lower.contains("ringgit") || lower.contains("pound") || lower.contains("exchange rate") ||
+            lower.contains("currency") || lower.contains("ডলার") || lower.contains("রিয়াল") ||
+            lower.contains("রিয়াল") || lower.contains("দিরহাম") || lower.contains("ইউরো") ||
+            lower.contains("পাউন্ড") || lower.contains("রিঙ্গিত") ||
             ((lower.contains("টাকা") || lower.contains("রেট")) &&
                 (lower.contains("দাম") || lower.contains("কত") || lower.contains("rate")))
 
@@ -126,7 +179,7 @@ class WebSearchService {
     private fun fetchPrayerTimesSource(query: String, language: SathiLanguage): WebSource? {
         return try {
             val resolved = resolveLocation(query)
-            val cityEng = resolved.displayName.substringBefore("/").trim().ifBlank { "Dhaka" }
+            val cityEng = resolved.displayName.substringBefore("/").substringBefore(",").trim().ifBlank { "Dhaka" }
             val encodedCity = URLEncoder.encode(cityEng, "UTF-8")
             val url = "https://api.aladhan.com/v1/timingsByCity?city=$encodedCity&country=Bangladesh&method=1"
             val req = Request.Builder().url(url).header("User-Agent", "SathiAndroidApp/1.0").build()
@@ -157,7 +210,7 @@ class WebSearchService {
         }
     }
 
-    private fun fetchExchangeRateSource(query: String, language: SathiLanguage): WebSource? {
+    private fun fetchExchangeRateSource(language: SathiLanguage): WebSource? {
         return try {
             val req = Request.Builder()
                 .url("https://open.er-api.com/v6/latest/USD")
@@ -169,28 +222,35 @@ class WebSearchService {
                 val rates = JSONObject(body).optJSONObject("rates") ?: return null
                 val bdtPerUsd = rates.optDouble("BDT", Double.NaN)
                 val eurPerUsd = rates.optDouble("EUR", Double.NaN)
+                val gbpPerUsd = rates.optDouble("GBP", Double.NaN)
                 val sarPerUsd = rates.optDouble("SAR", Double.NaN)
                 val aedPerUsd = rates.optDouble("AED", Double.NaN)
+                val myrPerUsd = rates.optDouble("MYR", Double.NaN)
                 val inrPerUsd = rates.optDouble("INR", Double.NaN)
                 if (bdtPerUsd.isNaN()) return null
 
                 val bdtPerEur = if (!eurPerUsd.isNaN() && eurPerUsd > 0) bdtPerUsd / eurPerUsd else 0.0
+                val bdtPerGbp = if (!gbpPerUsd.isNaN() && gbpPerUsd > 0) bdtPerUsd / gbpPerUsd else 0.0
                 val bdtPerSar = if (!sarPerUsd.isNaN() && sarPerUsd > 0) bdtPerUsd / sarPerUsd else 0.0
                 val bdtPerAed = if (!aedPerUsd.isNaN() && aedPerUsd > 0) bdtPerUsd / aedPerUsd else 0.0
+                val bdtPerMyr = if (!myrPerUsd.isNaN() && myrPerUsd > 0) bdtPerUsd / myrPerUsd else 0.0
                 val bdtPerInr = if (!inrPerUsd.isNaN() && inrPerUsd > 0) bdtPerUsd / inrPerUsd else 0.0
 
                 val snippet = if (language == SathiLanguage.BN) {
                     buildString {
-                        append("১ মার্কিন ডলার (USD) ≈ ${String.format("%.2f", bdtPerUsd)} টাকা")
+                        append("১ ডলার (USD) ≈ ${String.format("%.2f", bdtPerUsd)} টাকা")
                         if (bdtPerEur > 0) append(" • ১ ইউরো ≈ ${String.format("%.2f", bdtPerEur)} টাকা")
-                        if (bdtPerSar > 0) append(" • ১ সৌদি রিয়াল ≈ ${String.format("%.2f", bdtPerSar)} টাকা")
+                        if (bdtPerGbp > 0) append(" • ১ পাউন্ড ≈ ${String.format("%.2f", bdtPerGbp)} টাকা")
+                        if (bdtPerSar > 0) append(" • ১ রিয়াল ≈ ${String.format("%.2f", bdtPerSar)} টাকা")
                         if (bdtPerAed > 0) append(" • ১ দিরহাম ≈ ${String.format("%.2f", bdtPerAed)} টাকা")
+                        if (bdtPerMyr > 0) append(" • ১ রিঙ্গিত ≈ ${String.format("%.2f", bdtPerMyr)} টাকা")
                         if (bdtPerInr > 0) append(" • ১ রুপি ≈ ${String.format("%.2f", bdtPerInr)} টাকা")
                     }
                 } else {
                     buildString {
                         append("1 USD ≈ ${String.format("%.2f", bdtPerUsd)} BDT")
                         if (bdtPerEur > 0) append(" • 1 EUR ≈ ${String.format("%.2f", bdtPerEur)} BDT")
+                        if (bdtPerGbp > 0) append(" • 1 GBP ≈ ${String.format("%.2f", bdtPerGbp)} BDT")
                         if (bdtPerSar > 0) append(" • 1 SAR ≈ ${String.format("%.2f", bdtPerSar)} BDT")
                         if (bdtPerAed > 0) append(" • 1 AED ≈ ${String.format("%.2f", bdtPerAed)} BDT")
                     }
@@ -259,28 +319,22 @@ class WebSearchService {
 
     private fun resolveLocation(query: String): ResolvedCity {
         val lower = query.lowercase()
-
-        // Fast check across Bangladesh divisions & major districts in Bengali or English
         for ((pattern, englishName, coords) in bdDistrictEntries) {
             if (lower.contains(pattern)) {
                 return ResolvedCity(englishName, coords.first, coords.second)
             }
         }
-
-        // Clean weather words from query to extract any custom city/upazila/world location for Open-Meteo Geocoding
-        val candidate = extractCityCandidate(query)
+        val candidate = stripBengaliSuffixes(extractCityCandidate(query))
         if (candidate.isNotBlank()) {
             geocodeCity(candidate)?.let { return it }
         }
-
-        // Default fallback to Dhaka if no city was specified in "আজকের আবহাওয়া কেমন?"
         return ResolvedCity("Dhaka / ঢাকা", 23.8103, 90.4125)
     }
 
     private fun extractCityCandidate(raw: String): String {
         return raw
-            .replace(Regex("(weather|forecast|temperature|today|now|in|of|at)", RegexOption.IGNORE_CASE), " ")
-            .replace(Regex("(আবহাওয়া|আবহাওয়া|তাপমাত্রা|কেমন|আজকের|আজ|এখন|বৃষ্টি|হবে|কি|কী|বলো|জানাও|ের|র\\b)"), " ")
+            .replace(Regex("(weather|forecast|temperature|prayer|namaz|today|now|in|of|at)", RegexOption.IGNORE_CASE), " ")
+            .replace(Regex("(আবহাওয়া|আবহাওয়া|তাপমাত্রা|নামাজের|নামাজ|সময়সূচি|সময়|কেমন|আজকের|আজ|এখন|বৃষ্টি|হবে|কি|কী|বলো|জানাও|জেলায়|শহরে)"), " ")
             .replace(Regex("[?,!।]+"), " ")
             .trim()
             .replace(Regex("\\s+"), " ")
@@ -309,6 +363,28 @@ class WebSearchService {
         }
     }
 
+    private fun fetchBingSearchRss(query: String, language: SathiLanguage): List<WebSource> {
+        return try {
+            val encoded = URLEncoder.encode(query.take(110), "UTF-8")
+            val setLang = if (language == SathiLanguage.BN) "bn-BD" else "en-US"
+            val url = "https://www.bing.com/search?q=$encoded&format=rss&setlang=$setLang"
+            val req = Request.Builder()
+                .url(url)
+                .header(
+                    "User-Agent",
+                    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36"
+                )
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return emptyList()
+                val xml = resp.body?.string() ?: return emptyList()
+                parseRssItems(xml, defaultFallbackLabel = "Bing Web Search").take(3)
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
     private fun fetchGoogleNewsRss(query: String, language: SathiLanguage): List<WebSource> {
         return try {
             val cleanQuery = query
@@ -333,14 +409,14 @@ class WebSearchService {
             client.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return emptyList()
                 val xml = resp.body?.string() ?: return emptyList()
-                parseRssItems(xml).take(4)
+                parseRssItems(xml, defaultFallbackLabel = "Google News Bangladesh").take(4)
             }
         } catch (_: Exception) {
             emptyList()
         }
     }
 
-    private fun parseRssItems(xml: String): List<WebSource> {
+    private fun parseRssItems(xml: String, defaultFallbackLabel: String): List<WebSource> {
         val items = mutableListOf<WebSource>()
         try {
             val parser = XmlPullParserFactory.newInstance().newPullParser()
@@ -349,6 +425,7 @@ class WebSearchService {
             var currentTag = ""
             var title = ""
             var link = ""
+            var description = ""
             var pubDate = ""
             var sourceName = ""
 
@@ -361,16 +438,18 @@ class WebSearchService {
                             inItem = true
                             title = ""
                             link = ""
+                            description = ""
                             pubDate = ""
                             sourceName = ""
                         }
                     }
                     XmlPullParser.TEXT -> {
                         if (inItem) {
-                            val text = parser.text.orEmpty().trim()
+                            val text = parser.text.orEmpty()
                             when (currentTag) {
                                 "title" -> title += text
                                 "link" -> link += text
+                                "description" -> description += text
                                 "pubDate" -> pubDate += text
                                 "source" -> sourceName += text
                             }
@@ -378,14 +457,22 @@ class WebSearchService {
                     }
                     XmlPullParser.END_TAG -> {
                         if (parser.name == "item" && inItem) {
-                            if (title.isNotBlank() && link.isNotBlank()) {
+                            val cleanTitle = stripHtml(title)
+                            val cleanDesc = stripHtml(description)
+                            if (cleanTitle.isNotBlank() && link.isNotBlank()) {
                                 val meta = listOf(sourceName.trim(), pubDate.take(16).trim())
                                     .filter { it.isNotBlank() }
                                     .joinToString(" • ")
+                                val chosenSnippet = when {
+                                    cleanDesc.length >= 20 && !cleanDesc.equals(cleanTitle, ignoreCase = true) ->
+                                        cleanDesc.take(280)
+                                    meta.isNotBlank() -> meta
+                                    else -> defaultFallbackLabel
+                                }
                                 items.add(
                                     WebSource(
-                                        title = title.trim(),
-                                        snippet = meta.ifBlank { "Google News Bangladesh" },
+                                        title = cleanTitle,
+                                        snippet = chosenSnippet,
                                         url = link.trim()
                                     )
                                 )
@@ -402,7 +489,7 @@ class WebSearchService {
         return items
     }
 
-    private fun fetchWikipediaSources(topic: String, langCode: String): List<WebSource> {
+    private fun fetchWikipediaExtracts(topic: String, langCode: String): List<WebSource> {
         return try {
             val cleaned = topic.replace(Regex("[?,!।]+"), " ").trim()
             if (cleaned.length < 2) return emptyList()
@@ -420,40 +507,74 @@ class WebSearchService {
                     val extract = json.optString("extract").trim()
                     if (type != "disambiguation" && title.isNotBlank() && extract.length > 25) {
                         val pageUrl = "https://$langCode.wikipedia.org/wiki/${URLEncoder.encode(title.replace(" ", "_"), "UTF-8")}"
-                        return listOf(WebSource(title = title, snippet = extract.take(320), url = pageUrl))
+                        return listOf(WebSource(title = title, snippet = extract.take(420), url = pageUrl))
                     }
                 }
             }
 
-            // 2. Search API with strict relevance check (topic tokens must match title or snippet)
+            // 2. Generator Search + Extracts API (returns clean full multi-sentence intro without HTML!)
             val topicTokens = cleaned.lowercase()
                 .split(Regex("\\s+"))
                 .filter { it.length >= 2 }
             val encoded = URLEncoder.encode(cleaned, "UTF-8")
-            val url =
-                "https://$langCode.wikipedia.org/w/api.php?action=query&list=search&srsearch=$encoded&format=json&srlimit=3&utf8=1"
+            val url = "https://$langCode.wikipedia.org/w/api.php" +
+                "?action=query&generator=search&gsrsearch=$encoded&gsrlimit=4" +
+                "&prop=extracts|info&exintro=1&explaintext=1&exsentences=4&redirects=1&inprop=url&format=json&utf8=1"
             val req = Request.Builder().url(url).header("User-Agent", "SathiAndroidApp/1.0").build()
             client.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return emptyList()
                 val body = resp.body?.string() ?: return emptyList()
-                val searchArray = JSONObject(body)
-                    .optJSONObject("query")
-                    ?.optJSONArray("search") ?: return emptyList()
+                val pagesObj = JSONObject(body).optJSONObject("query")?.optJSONObject("pages")
+                    ?: return emptyList()
 
                 buildList {
-                    for (i in 0 until searchArray.length()) {
-                        val item = searchArray.getJSONObject(i)
-                        val title = item.optString("title").trim()
-                        val rawSnippet = item.optString("snippet")
-                            .replace(Regex("<[^>]*>"), "")
-                            .replace("&quot;", "\"")
-                            .replace("&amp;", "&")
-                            .trim()
-                        val combinedLower = "$title $rawSnippet".lowercase()
+                    val keys = pagesObj.keys()
+                    while (keys.hasNext()) {
+                        val page = pagesObj.optJSONObject(keys.next()) ?: continue
+                        val title = page.optString("title").trim()
+                        val extract = page.optString("extract").replace(Regex("\\s+"), " ").trim()
+                        val pageUrl = page.optString("fullurl").ifBlank {
+                            "https://$langCode.wikipedia.org/wiki/${URLEncoder.encode(title.replace(" ", "_"), "UTF-8")}"
+                        }
+                        val combinedLower = "$title $extract".lowercase()
                         val isRelevant = topicTokens.any { token -> combinedLower.contains(token) }
-                        if (title.isNotEmpty() && isRelevant) {
-                            val pageUrl = "https://$langCode.wikipedia.org/wiki/${URLEncoder.encode(title.replace(" ", "_"), "UTF-8")}"
-                            add(WebSource(title = title, snippet = rawSnippet, url = pageUrl))
+                        if (title.isNotEmpty() && extract.length > 20 && isRelevant) {
+                            add(WebSource(title = title, snippet = extract.take(420), url = pageUrl))
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun fetchWikidataEntities(topic: String, langCode: String): List<WebSource> {
+        return try {
+            val cleaned = topic.replace(Regex("[?,!।]+"), " ").trim()
+            if (cleaned.length < 2) return emptyList()
+            val encoded = URLEncoder.encode(cleaned, "UTF-8")
+            val url = "https://www.wikidata.org/w/api.php" +
+                "?action=wbsearchentities&search=$encoded&language=$langCode&uselang=$langCode&format=json&limit=3"
+            val req = Request.Builder().url(url).header("User-Agent", "SathiAndroidApp/1.0").build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return emptyList()
+                val body = resp.body?.string() ?: return emptyList()
+                val searchArr = JSONObject(body).optJSONArray("search") ?: return emptyList()
+                buildList {
+                    for (i in 0 until searchArr.length()) {
+                        val item = searchArr.optJSONObject(i) ?: continue
+                        val label = item.optString("label").trim()
+                        val desc = item.optString("description").trim()
+                        val conceptUri = item.optString("concepturi").trim()
+                        if (label.isNotBlank() && desc.isNotBlank()) {
+                            add(
+                                WebSource(
+                                    title = label,
+                                    snippet = desc,
+                                    url = conceptUri.ifBlank { "https://www.wikidata.org/" }
+                                )
+                            )
                         }
                     }
                 }
@@ -478,7 +599,7 @@ class WebSearchService {
                 if (abstractText.isNotEmpty() && abstractUrl.isNotEmpty()) {
                     WebSource(
                         title = heading.ifBlank { query },
-                        snippet = abstractText.take(300),
+                        snippet = abstractText.take(360),
                         url = abstractUrl
                     )
                 } else null
@@ -486,69 +607,6 @@ class WebSearchService {
         } catch (_: Exception) {
             null
         }
-    }
-
-    private fun fetchDuckDuckGoWebResults(query: String, language: SathiLanguage): List<WebSource> {
-        return try {
-            val encoded = URLEncoder.encode(query, "UTF-8")
-            val region = if (language == SathiLanguage.BN) "bd-bn" else "wt-wt"
-            val url = "https://html.duckduckgo.com/html/?q=$encoded&kl=$region"
-            val req = Request.Builder()
-                .url(url)
-                .header(
-                    "User-Agent",
-                    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36"
-                )
-                .build()
-            client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return emptyList()
-                val html = resp.body?.string() ?: return emptyList()
-                val linkPattern = Regex(
-                    """<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>""",
-                    setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
-                )
-                val snippetPattern = Regex(
-                    """<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>|<div[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</div>""",
-                    setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
-                )
-                val links = linkPattern.findAll(html).toList()
-                val snippets = snippetPattern.findAll(html).toList()
-                buildList {
-                    for (i in links.indices) {
-                        if (size >= 3) break
-                        val rawUrl = decodeDuckDuckGoHref(links[i].groupValues[1])
-                        val title = stripHtml(links[i].groupValues[2])
-                        val snippet = snippets.getOrNull(i)?.let { m ->
-                            stripHtml(m.groupValues[1].ifBlank { m.groupValues[2] })
-                        }.orEmpty()
-                        if (title.isNotBlank() && rawUrl.startsWith("http")) {
-                            add(
-                                WebSource(
-                                    title = title.take(110),
-                                    snippet = snippet.ifBlank { title }.take(260),
-                                    url = rawUrl
-                                )
-                            )
-                        }
-                    }
-                }
-            }
-        } catch (_: Exception) {
-            emptyList()
-        }
-    }
-
-    private fun decodeDuckDuckGoHref(raw: String): String {
-        val clean = decodeHtmlEntities(raw)
-        val uddgMatch = Regex("[?&]uddg=([^&]+)").find(clean)
-        if (uddgMatch != null) {
-            return try {
-                java.net.URLDecoder.decode(uddgMatch.groupValues[1], "UTF-8")
-            } catch (_: Exception) {
-                clean
-            }
-        }
-        return if (clean.startsWith("//")) "https:$clean" else clean
     }
 
     private fun stripHtml(raw: String): String =

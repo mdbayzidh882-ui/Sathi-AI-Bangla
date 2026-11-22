@@ -9,6 +9,7 @@ class OfflineCompanionEngine(
     private val packManager: OfflinePackManager? = null
 ) {
     private var storyCursor = 0
+    private var jokeCursor = 0
     private var chatCursor = 0
 
     fun respondOffline(
@@ -16,7 +17,8 @@ class OfflineCompanionEngine(
         language: SathiLanguage,
         userName: String
     ): SathiTurnResult {
-        val lower = input.lowercase().trim()
+        val text = input.trim()
+        val lower = text.lowercase()
 
         if (lower.startsWith("থামো") || lower == "থাম" || lower.startsWith("stop")) {
             val reply = if (language == SathiLanguage.BN) {
@@ -27,8 +29,10 @@ class OfflineCompanionEngine(
             return turn(reply, SathiMood.WARM)
         }
 
-        // 1. Creator rule
-        if (lower.contains("বানিয়ে") || lower.contains("বানাইছে") || lower.contains("তৈরি") ||
+        // 1. Creator rule (scoped so 'ছবি তৈরি' etc. are not misrouted)
+        if (lower.contains("বানিয়ে") || lower.contains("বানিয়ে") || lower.contains("বানাইছে") ||
+            lower.contains("নির্মাতা") ||
+            lower.contains("কে তৈরি") || lower.contains("কার তৈরি") || lower.contains("তোমাকে তৈরি") || lower.contains("তোমারে তৈরি") ||
             lower.contains("who made") || lower.contains("created you") || lower.contains("creator")
         ) {
             return turn(
@@ -55,20 +59,63 @@ class OfflineCompanionEngine(
             return turn(SathiAiService.formatCurrentTimeAndDate(language), SathiMood.WARM)
         }
 
-        // 4. Web search politely declined offline
-        if (lower.contains("search") || lower.contains("খবর") || lower.contains("news") ||
-            lower.contains("weather") || lower.contains("আবহাওয়া") || lower.contains("আবহাওয়া") ||
-            lower.contains("score") || lower.contains("স্কোর") || lower.contains("দাম") || lower.contains("youtube")
-        ) {
-            val reply = if (language == SathiLanguage.BN) {
-                "আমি এখন অফলাইন মোডে আছি, তাই লাইভ আবহাওয়া, খবর বা ইউটিউব দেখতে ইন্টারনেট সংযোগ প্রয়োজন। তবে গল্প, সাধারণ জ্ঞান, সময়-তারিখ, অ্যালার্ম, টাইমার, ফ্ল্যাশলাইট বা কল এখনই কাজ করবে।"
-            } else {
-                "I'm in Offline Mode, so live weather, news, and YouTube need internet. However, I can tell stories, share the time/date, answer saved offline facts, or run alarms, timers, flashlight, and calls!"
-            }
-            return turn(reply, SathiMood.WARM)
+        // 4. Verified built-in facts, Downloaded Knowledge Pack, Unit Converter & Math
+        SathiAiService.tryEvaluateMath(text, language)?.let { mathReply ->
+            return turn(mathReply, SathiMood.SERIOUS)
+        }
+        SathiAiService.tryConvertUnits(text, language)?.let { unitReply ->
+            return turn(unitReply, SathiMood.SERIOUS)
+        }
+        SathiAiService.matchVerifiedBuiltInFact(lower, language)?.let { factReply ->
+            return turn(factReply, SathiMood.SERIOUS)
         }
 
-        // 4. Flashlight ON / OFF
+        // Check offline pack BEFORE declining live search so stored encyclopedia facts always answer offline!
+        packManager?.searchOfflineKnowledge(text, language)?.let { packHit ->
+            return turn(packHit, SathiMood.SERIOUS)
+        }
+
+        // 5. Image generation preview routing (shows clear Sample Preview card even offline)
+        SathiAiService.detectImageGenerationPrompt(text, lower)?.let { imgPrompt ->
+            val reply = if (language == SathiLanguage.BN) {
+                "\"$imgPrompt\"-এর জন্য নমুনা ছবি প্রিভিউ তৈরি করছি..."
+            } else {
+                "Creating a sample preview image for \"$imgPrompt\"..."
+            }
+            return turn(reply, SathiMood.HAPPY, PhoneActionType.GENERATE_IMAGE, imgPrompt)
+        }
+
+        // 6. Social Apps & Friend WhatsApp/Messenger SMS / Comment / Reply offline
+        SathiAiService.detectSocialActionOrOpen(text, lower, language)?.let { socialTurn ->
+            return socialTurn
+        }
+
+        // Open YouTube, Settings, or other phone apps offline
+        if (lower.startsWith("open ") || lower.startsWith("launch ") ||
+            lower.contains("খোলো") || lower.contains("খুলো") || lower.contains("চালু করো") ||
+            lower.contains("ঢোকো") || lower.contains("ঢোকাও") || lower.contains("ঢুকো")
+        ) {
+            val offlineAppTarget = text
+                .replace(Regex("(open|launch)", RegexOption.IGNORE_CASE), "")
+                .replace("খোলো", "")
+                .replace("খুলো", "")
+                .replace("চালু করো", "")
+                .replace("ঢোকো", "")
+                .replace("ঢোকাও", "")
+                .replace("ঢুকো", "")
+                .replace("অ্যাপ", "")
+                .trim()
+            if (offlineAppTarget.isNotBlank()) {
+                val reply = if (language == SathiLanguage.BN) {
+                    "জি, ফোনে $offlineAppTarget অ্যাপটি খুলে দিচ্ছি।"
+                } else {
+                    "Opening $offlineAppTarget for you."
+                }
+                return turn(reply, SathiMood.WARM, PhoneActionType.OPEN_APP, offlineAppTarget)
+            }
+        }
+
+        // 7. Flashlight ON / OFF & Volume
         if (lower.contains("flashlight on") || lower.contains("torch on") ||
             ((lower.contains("ফ্ল্যাশ") || lower.contains("টর্চ") || lower.contains("লাইট")) &&
                 (lower.contains("চালু") || lower.contains("জ্বালাও") || lower.contains("অন")))
@@ -87,7 +134,16 @@ class OfflineCompanionEngine(
             return turn(reply, SathiMood.WARM, PhoneActionType.FLASHLIGHT_OFF)
         }
 
-        // 5. Alarm / Timer / Call
+        if (lower.contains("volume up") || (lower.contains("ভলিউম") && (lower.contains("বাড়া") || lower.contains("বাড়া") || lower.contains("বেশি")))) {
+            val reply = if (language == SathiLanguage.BN) "জি, অফলাইনে ভলিউম বাড়িয়ে দিচ্ছি।" else "Increasing media volume offline."
+            return turn(reply, SathiMood.WARM, PhoneActionType.VOLUME_UP)
+        }
+        if (lower.contains("volume down") || (lower.contains("ভলিউম") && (lower.contains("কমা") || lower.contains("কম")))) {
+            val reply = if (language == SathiLanguage.BN) "জি, অফলাইনে ভলিউম কমিয়ে দিচ্ছি।" else "Lowering media volume offline."
+            return turn(reply, SathiMood.WARM, PhoneActionType.VOLUME_DOWN)
+        }
+
+        // 8. Alarm / Timer / Call
         if (lower.contains("alarm") || lower.contains("অ্যালার্ম")) {
             val timeMatch = Regex("(\\d{1,2})[:.](\\d{2})").find(lower)
             val hourOnly = Regex("(\\d{1,2})").find(lower)?.groupValues?.getOrNull(1)?.toIntOrNull()
@@ -114,7 +170,7 @@ class OfflineCompanionEngine(
         }
 
         if (lower.startsWith("call ") || lower.contains("কল কর") || lower.contains("ফোন কর")) {
-            val digits = Regex("(\\+?\\d[\\d\\s-]{4,})").find(input)?.value?.trim() ?: ""
+            val digits = Regex("(\\+?\\d[\\d\\s-]{4,})").find(text)?.value?.trim() ?: ""
             val reply = if (language == SathiLanguage.BN) {
                 "অফলাইন কল করার আগে আপনার অনুমতি নিচ্ছি। নিচের বক্সে নিশ্চিত করুন।"
             } else {
@@ -123,42 +179,16 @@ class OfflineCompanionEngine(
             return turn(reply, SathiMood.WARM, PhoneActionType.CALL_CONFIRM, digits)
         }
 
-        // 5b. Open social or phone apps offline
-        val offlineAppTarget = when {
-            lower.contains("whatsapp") || lower.contains("হোয়াটস") || lower.contains("হোয়াটস") -> "whatsapp"
-            lower.contains("messenger") || lower.contains("মেসেঞ্জার") -> "messenger"
-            lower.contains("facebook") || lower.contains("ফেসবুক") -> "facebook"
-            lower.contains("instagram") || lower.contains("ইনস্টাগ্রাম") -> "instagram"
-            lower.contains("tiktok") || lower.contains("টিকটক") -> "tiktok"
-            lower.contains("youtube") || lower.contains("ইউটিউব") -> "youtube"
-            lower.contains("setting") || lower.contains("সেটিং") -> "settings"
-            else -> null
-        }
-        if (offlineAppTarget != null &&
-            (lower.contains("খোলো") || lower.contains("ঢোকো") || lower.contains("চালাও") || lower.contains("open"))
-        ) {
-            val reply = if (language == SathiLanguage.BN) {
-                "জি, ফোনে $offlineAppTarget অ্যাপটি খুলে দিচ্ছি।"
-            } else {
-                "Opening $offlineAppTarget for you."
-            }
-            return turn(reply, SathiMood.WARM, PhoneActionType.OPEN_APP, offlineAppTarget)
-        }
-
-        // 6. Stories offline!
-        if (lower.contains("গল্প") || lower.contains("কাহিনী") || lower.contains("story")) {
-            val story = SathiAiService.nextStory(language, storyCursor++, input)
+        // 9. Stories, Jokes, Poems offline!
+        if (lower.contains("গল্প") || lower.contains("কাহিনী") || lower.contains("কাহিনি") || lower.contains("story")) {
+            val story = SathiAiService.nextStory(language, storyCursor++, text)
             return turn(story, SathiMood.HAPPY)
         }
-
-        // 7. Quick Math offline
-        SathiAiService.tryEvaluateMath(input, language)?.let { mathReply ->
-            return turn(mathReply, SathiMood.SERIOUS)
+        if (lower.contains("কৌতুক") || lower.contains("জোক") || lower.contains("joke") || lower.contains("ধাঁধা")) {
+            return turn(SathiAiService.nextJoke(language, jokeCursor++), SathiMood.PLAYFUL)
         }
-
-        // 8. Check Real Downloaded Offline Knowledge Pack on disk!
-        packManager?.searchOfflineKnowledge(input, language)?.let { packHit ->
-            return turn(packHit, SathiMood.SERIOUS)
+        if (lower.contains("কবিতা") || lower.contains("poem")) {
+            return turn(SathiAiService.nextPoem(language, jokeCursor++), SathiMood.WARM)
         }
 
         // 10. Sad / Comforting mood
@@ -178,22 +208,38 @@ class OfflineCompanionEngine(
             lower.contains("সালাম") || lower.contains("আসসালামু") || lower.contains("কেমন আছ") || lower.contains("good morning")
         ) {
             val reply = if (language == SathiLanguage.BN) {
-                "আসসালামু আলাইকুম $userName! আমি আপনার অফলাইন সাথী। আলহামদুলিল্লাহ ভালো আছি — আপনি কেমন আছেন?"
+                "আসসালামু আলাইকুম $userName! আমি আপনার অফলাইন সাথী। আলহামদুলিল্লাহ ভালো আছি — গল্প, কৌতুক, একক রূপান্তর, সাধারণ জ্ঞান বা ফোন কন্ট্রোলের জন্য আমাকে বলুন!"
             } else {
-                "Assalamu Alaikum $userName! I am Sathi in offline mode. I'm doing great — how are you feeling today?"
+                "Assalamu Alaikum $userName! I am Sathi in offline mode. Ask me for stories, jokes, unit conversions, saved knowledge, or phone actions!"
             }
             return turn(reply, SathiMood.HAPPY)
         }
 
-        // Varied, natural offline replies (never repeats the exact same robotic line!)
+        // 12. Live web queries gracefully explained offline + suggest custom offline download
+        if (SathiAiService.shouldTriggerWebSearch(text, lower)) {
+            val savedPreview = packManager?.getAvailableTopicsPreview(5).orEmpty()
+            val previewHintBn = if (savedPreview.isNotEmpty()) {
+                "\n\nবর্তমান অফলাইন প্যাকে সংরক্ষিত কিছু বিষয়: ${savedPreview.joinToString(", ")}। চাইলে সেটিংস থেকে যেকোনো নতুন বিষয়ও অফলাইনে ডাউনলোড করে রাখতে পারবেন!"
+            } else {
+                "\n\nসেটিংস → 'অফলাইন প্যাক আপডেট' দিলে আরও অনেক বিষয় অফলাইনেই জানতে পারবেন।"
+            }
+            val reply = if (language == SathiLanguage.BN) {
+                "আমি এখন অফলাইন মোডে আছি, তাই লাইভ ওয়েব সার্চের জন্য ইন্টারনেট প্রয়োজন।$previewHintBn"
+            } else {
+                "I'm currently in Offline Mode, so live web search needs internet. You can download custom topics or update the Offline Pack in Settings to answer even more offline!"
+            }
+            return turn(reply, SathiMood.WARM)
+        }
+
+        // Varied, informative offline replies
         val variedBn = listOf(
-            "আমি মন দিয়ে শুনছি, $userName। আপনি চাইলে আমাকে একটি গল্প শোনাতে বলতে পারেন, সহজ অঙ্ক কষতে দিতে পারেন, বা অ্যালার্ম-ফ্ল্যাশলাইট চালাতে বলতে পারেন।",
-            "দারুণ কথা বলেছেন, $userName! অফলাইন মোডেও আমি আপনার সাথে আছি—গল্প, সময় দেখা বা যেকোনো ফোন কাজের জন্য আমাকে বলুন।",
-            "জি $userName, আমি বুঝেছি। আপনার কি একটু গল্প শুনতে ভালো লাগবে, নাকি ডাউনলোড করা তথ্য বা সময় জানতে চান?"
+            "আমি মন দিয়ে শুনছি, $userName। অফলাইনে আমাকে গল্প, কবিতা, কৌতুক, একক রূপান্তর (যেমন: ৫ কেজি কত গ্রাম), সাধারণ জ্ঞান বা অ্যালার্ম-ফ্ল্যাশলাইট চালাতে বলতে পারেন।",
+            "দারুণ কথা বলেছেন, $userName! আপনি চাইলে সেটিংস থেকে আপনার পছন্দের যেকোনো বিষয় অফলাইন প্যাকে যুক্ত করতে পারবেন—তাহলে ইন্টারনেট ছাড়াও আমি আরও বেশি বলতে পারব।",
+            "জি $userName, আমি বুঝেছি। আপনার কি একটু মজার গল্প শুনতে ভালো লাগবে, নাকি ডাউনলোড করা তথ্য বা সময় জানতে চান?"
         )
         val variedEn = listOf(
-            "I hear you, $userName! Even offline, you can ask me for a story, quick math, time, alarms, timers, or saved knowledge.",
-            "Thanks for sharing that, $userName. Would you like a story, or help with an alarm, timer, or flashlight?",
+            "I hear you, $userName! Even offline, you can ask for stories, poems, jokes, unit conversions, quick math, alarms, or saved knowledge.",
+            "Thanks for sharing that, $userName. You can add custom topics in Settings -> Offline Pack so I know even more without internet!",
             "I'm right here beside you offline, $userName. Ask me anything from your downloaded pack or ask for a fresh story!"
         )
         val idx = chatCursor++ % variedBn.size

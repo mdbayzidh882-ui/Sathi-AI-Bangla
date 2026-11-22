@@ -8,6 +8,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.OfflineCompanionEngine
+import com.example.data.PlaceholderSathiImageGenRepository
 import com.example.data.SathiAiService
 import com.example.data.SathiDatabase
 import com.example.data.SathiLocalRepository
@@ -333,5 +334,122 @@ class ExampleRobolectricTest {
             recentHistory = emptyList()
         ).getOrThrow()
         assertTrue(ghostStory.replyText.contains("স্টেশন"))
+    }
+
+    @Test
+    fun `upgraded factual search, friend WhatsApp or Messenger SMS and reply, image preview, and expanded offline mode work accurately`() = runBlocking {
+        val ai = SathiAiService()
+
+        // 1. Accurate built-in verified quick fact (no wrong answer)
+        val fruitTurn = ai.generateCompanionReply(
+            userMessage = "বাংলাদেশের জাতীয় ফল কী?",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertTrue(fruitTurn.replyText.contains("কাঁঠাল"))
+
+        // 2. General factual question routes cleanly to WEB_SEARCH
+        val searchTurn = ai.generateCompanionReply(
+            userMessage = "সূর্য থেকে পৃথিবীর দূরত্ব কত?",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertEquals(PhoneActionType.WEB_SEARCH, searchTurn.actionType)
+
+        // 3. Lightweight image generation routes to GENERATE_IMAGE + Placeholder repo marks Sample Preview
+        val imgTurn = ai.generateCompanionReply(
+            userMessage = "একটি সুন্দর সূর্যাস্তের ছবি তৈরি করো",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertEquals(PhoneActionType.GENERATE_IMAGE, imgTurn.actionType)
+        assertTrue(imgTurn.actionParam.isNotBlank())
+
+        val imgRepo = PlaceholderSathiImageGenRepository()
+        val imgOutcome = imgRepo.generateImage(imgTurn.actionParam, SathiLanguage.BN).getOrThrow()
+        assertTrue(imgOutcome.isPlaceholderPreview)
+        assertTrue(imgOutcome.bitmap.width > 100)
+        assertTrue(imgOutcome.requiresFirebaseNotice.contains("Firebase"))
+
+        // 4. WhatsApp friend SMS & Messenger reply extraction
+        val waFriendTurn = ai.generateCompanionReply(
+            userMessage = "হোয়াটসঅ্যাপ খুলে আমার বন্ধু রহিমকে একটি এসএমএস করো ওকে জানাও আমি কাল আসব",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertEquals(PhoneActionType.SOCIAL_MESSAGE_CONFIRM, waFriendTurn.actionType)
+        assertEquals("WhatsApp", waFriendTurn.actionParam)
+        assertEquals("রহিম", waFriendTurn.recipientParam)
+        assertTrue(waFriendTurn.secondaryParam.contains("আমি কাল আসব"))
+
+        val messengerReplyTurn = ai.generateCompanionReply(
+            userMessage = "মেসেঞ্জার অন করে করিমকে রিপ্লাই দাও ঠিক আছে ভাই",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertEquals(PhoneActionType.SOCIAL_MESSAGE_CONFIRM, messengerReplyTurn.actionType)
+        assertEquals("Messenger", messengerReplyTurn.actionParam)
+        assertEquals("করিম", messengerReplyTurn.recipientParam)
+        assertTrue(messengerReplyTurn.secondaryParam.contains("ঠিক আছে"))
+
+        // 5. Upgraded offline engine unit conversion, jokes, and social actions
+        val offlineEngine = OfflineCompanionEngine()
+        val unitTurn = offlineEngine.respondOffline("৫ কেজি কত গ্রাম", SathiLanguage.BN, "বাইজিদ")
+        assertTrue(unitTurn.replyText.contains("5000"))
+
+        val jokeTurn = offlineEngine.respondOffline("একটি মজার কৌতুক বলো", SathiLanguage.BN, "বাইজিদ")
+        assertTrue(jokeTurn.replyText.isNotBlank())
+
+        val offlineFriendWa = offlineEngine.respondOffline(
+            "WhatsApp এ আমার বন্ধু হাসানকে মেসেজ পাঠাও কেমন আছো",
+            SathiLanguage.BN,
+            "বাইজিদ"
+        )
+        assertEquals(PhoneActionType.SOCIAL_MESSAGE_CONFIRM, offlineFriendWa.actionType)
+        assertEquals("হাসান", offlineFriendWa.recipientParam)
+    }
+
+    @Test
+    fun `banner ad container defaults to requested auctionr HTTPS url and rejects unsafe schemes`() {
+        val defaultConfig = com.example.model.AppConfig()
+        assertEquals(
+            "https://auctionr.org/4/9ef9d1d918fa128597c9e3243b06d0ae",
+            defaultConfig.bannerAdUrl
+        )
+        assertEquals(
+            "https://auctionr.org/4/9ef9d1d918fa128597c9e3243b06d0ae",
+            com.example.ui.sanitizeBannerHttpsUrl(defaultConfig.bannerAdUrl)
+        )
+        assertEquals(null, com.example.ui.sanitizeBannerHttpsUrl("http://auctionr.org/4/9ef9d1d918fa128597c9e3243b06d0ae"))
+        assertEquals(null, com.example.ui.sanitizeBannerHttpsUrl("javascript:alert(1)"))
+        assertEquals(null, com.example.ui.sanitizeBannerHttpsUrl("file:///etc/passwd"))
+        assertEquals(null, com.example.ui.sanitizeBannerHttpsUrl("https://127.0.0.1/test"))
+    }
+
+    @Test
+    fun `admin google key verification validates input, masks key preview, and persists in preferences`() = runBlocking {
+        val ai = SathiAiService()
+        val blankResult = ai.verifyGoogleApiKey("   ", SathiLanguage.BN)
+        assertTrue(blankResult.isFailure)
+
+        assertEquals("AIza••••••7890", com.example.ui.maskApiKeyPreview("AIzaSyDemoKey1234567890"))
+        assertEquals("", com.example.ui.maskApiKeyPreview("   "))
+
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = com.example.core.SathiPreferences(context)
+        prefs.saveCustomGeminiApiKey("  AIzaTestSample1234567890  ")
+        assertEquals("AIzaTestSample1234567890", prefs.settingsFlow.first().customGeminiApiKey)
+        prefs.saveCustomGeminiApiKey("")
+        assertEquals("", prefs.settingsFlow.first().customGeminiApiKey)
     }
 }

@@ -441,6 +441,7 @@ class SathiLocalRepository(private val dao: SathiDao) {
                     announcementActive = config.announcementActive,
                     bannerAdEnabled = config.bannerAdEnabled,
                     bannerAdUnitId = config.bannerAdUnitId.trim().ifBlank { "ca-app-pub-3940256099942544/6300978111" },
+                    bannerAdUrl = config.bannerAdUrl.trim(),
                     updatedBy = adminUid,
                     updatedAt = now
                 )
@@ -565,6 +566,7 @@ class SathiLocalRepository(private val dao: SathiDao) {
         announcementActive = announcementActive,
         bannerAdEnabled = bannerAdEnabled,
         bannerAdUnitId = bannerAdUnitId,
+        bannerAdUrl = bannerAdUrl,
         updatedBy = updatedBy,
         updatedAt = updatedAt
     )

@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Policy
 import androidx.compose.material.icons.filled.RecordVoiceOver
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VolumeUp
@@ -96,6 +97,7 @@ fun SettingsAndPlanScreen(
         mutableStateOf(localSettings.customGeminiApiKey)
     }
     var codeInput by remember { mutableStateOf("") }
+    var customTopicInput by remember { mutableStateOf("") }
     var showPrivacyDialog by remember { mutableStateOf(false) }
     var showOverlayDialog by remember { mutableStateOf(false) }
     var showAccessibilityDialog by remember { mutableStateOf(false) }
@@ -475,9 +477,9 @@ fun SettingsAndPlanScreen(
                     }
                     Text(
                         text = if (language == SathiLanguage.BN) {
-                            "চাইলে নিজের ফ্রি Gemini API Key যোগ করলে সাথী হুবহু গুগল জেমিনির মতো গুগল সার্চ, গভীর আলোচনা ও ছবি/স্ক্রিন বিশ্লেষণ করবে। কী ছাড়াও সাথী সম্পূর্ণ চালু থাকে।"
+                            "চাইলে নিজের ফ্রি Google API Key যোগ করলে সাথী হুবহু গুগল জেমিনির মতো Google থেকে সার্চ ও ছবি/স্ক্রিন বিশ্লেষণ করবে। অ্যাডমিন প্যানেলের 'Google চাবি' ট্যাব থেকেও এক ক্লিকে পেস্ট ও যাচাই করতে পারবেন।"
                         } else {
-                            "Optional: add your personal Gemini API Key to unlock live Google Search grounding and deep multimodal vision. Sathi also works without a key."
+                            "Optional: add your personal Google API Key to unlock live Google Search grounding and multimodal vision. You can also paste and verify it in Admin Panel -> Google চাবি."
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -706,30 +708,86 @@ fun SettingsAndPlanScreen(
                                 }
                             }
                             OfflinePackState.INSTALLED -> {
-                                Row(
+                                Column(
                                     modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    Column(modifier = Modifier.weight(1f)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = if (language == SathiLanguage.BN) "অফলাইন মোড চালু রাখুন" else "Use Offline Mode",
+                                                style = MaterialTheme.typography.bodyLarge,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            Text(
+                                                text = viewModel.getOfflinePackStorageSummary(),
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Switch(
+                                                checked = localSettings.offlineModeEnabled,
+                                                onCheckedChange = { viewModel.setOfflineModeEnabled(it) }
+                                            )
+                                            IconButton(onClick = { viewModel.deleteOfflinePack() }) {
+                                                Icon(Icons.Default.Delete, contentDescription = "Delete offline pack", tint = MaterialTheme.colorScheme.error)
+                                            }
+                                        }
+                                    }
+
+                                    OutlinedButton(
+                                        onClick = { viewModel.updateOfflinePack() },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("update_offline_pack_button")
+                                    ) {
+                                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
                                         Text(
-                                            text = if (language == SathiLanguage.BN) "অফলাইন মোড চালু রাখুন" else "Use Offline Mode",
-                                            style = MaterialTheme.typography.bodyLarge,
-                                            fontWeight = FontWeight.SemiBold
-                                        )
-                                        Text(
-                                            text = viewModel.getOfflinePackStorageSummary(),
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = MaterialTheme.colorScheme.primary
+                                            if (language == SathiLanguage.BN) "আপডেট ও নতুন তথ্য নিন (Update Pack)"
+                                            else "Update & Expand Offline Pack"
                                         )
                                     }
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Switch(
-                                            checked = localSettings.offlineModeEnabled,
-                                            onCheckedChange = { viewModel.setOfflineModeEnabled(it) }
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        OutlinedTextField(
+                                            value = customTopicInput,
+                                            onValueChange = { customTopicInput = it },
+                                            label = {
+                                                Text(
+                                                    if (language == SathiLanguage.BN) "নতুন বিষয় অফলাইনে যোগ করুন"
+                                                    else "Add custom offline topic"
+                                                )
+                                            },
+                                            placeholder = {
+                                                Text(if (language == SathiLanguage.BN) "যেমন: জাপান, কম্পিউটার..." else "e.g., Japan, Physics")
+                                            },
+                                            singleLine = true,
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .testTag("custom_offline_topic_input")
                                         )
-                                        IconButton(onClick = { viewModel.deleteOfflinePack() }) {
-                                            Icon(Icons.Default.Delete, contentDescription = "Delete offline pack", tint = MaterialTheme.colorScheme.error)
+                                        Button(
+                                            onClick = {
+                                                val topic = customTopicInput.trim()
+                                                if (topic.isNotEmpty()) {
+                                                    customTopicInput = ""
+                                                    viewModel.downloadCustomOfflineTopic(topic)
+                                                }
+                                            },
+                                            enabled = customTopicInput.isNotBlank(),
+                                            modifier = Modifier.testTag("custom_offline_topic_button")
+                                        ) {
+                                            Text(if (language == SathiLanguage.BN) "যোগ" else "Add")
                                         }
                                     }
                                 }

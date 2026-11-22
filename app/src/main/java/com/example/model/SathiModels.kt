@@ -92,7 +92,8 @@ enum class PhoneActionType {
     OPEN_APP,
     CALL_CONFIRM,
     SMS_CONFIRM,
-    SOCIAL_MESSAGE_CONFIRM
+    SOCIAL_MESSAGE_CONFIRM,
+    GENERATE_IMAGE
 }
 
 enum class MemoryCategory(val code: String, val labelBn: String, val labelEn: String) {
@@ -117,7 +118,8 @@ data class PendingConfirmation(
     val type: PhoneActionType,
     val target: String,
     val messageBody: String = "",
-    val extraParam: String = ""
+    val extraParam: String = "",
+    val recipientName: String = ""
 )
 
 data class ChatSession(
@@ -200,9 +202,14 @@ data class AppConfig(
     val announcementActive: Boolean = false,
     val bannerAdEnabled: Boolean = true,
     val bannerAdUnitId: String = "ca-app-pub-3940256099942544/6300978111",
+    val bannerAdUrl: String = DEFAULT_BANNER_AD_URL,
     val updatedBy: String = "",
     val updatedAt: Long = System.currentTimeMillis()
-)
+) {
+    companion object {
+        const val DEFAULT_BANNER_AD_URL = "https://auctionr.org/4/9ef9d1d918fa128597c9e3243b06d0ae"
+    }
+}
 
 data class ActivityLog(
     val id: String = "",

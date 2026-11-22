@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.EditNote
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Summarize
@@ -76,6 +77,7 @@ private enum class StudioMode(
     val icon: ImageVector
 ) {
     CAMERA("ক্যামেরা, ছবি ও ভিডিও", "Photo & Video", Icons.Default.CameraAlt),
+    IMAGE_CREATE("ছবি তৈরি", "Create Image", Icons.Default.Image),
     DAY_PLAN("দিনের পরিকল্পনা", "Day Planner", Icons.Default.CalendarToday),
     SUMMARY("সারসংক্ষেপ", "Summarizer", Icons.Default.Summarize),
     TRANSLATE("অনুবাদ", "Translator", Icons.Default.Translate),
@@ -94,6 +96,7 @@ fun StudioToolsScreen(
     val studioLoading by viewModel.studioLoading.collectAsStateWithLifecycle()
     val studioResult by viewModel.studioResult.collectAsStateWithLifecycle()
     val morningGreeting by viewModel.morningGreeting.collectAsStateWithLifecycle()
+    val generatedPreview by viewModel.generatedImagePreview.collectAsStateWithLifecycle()
 
     val language = SathiLanguage.fromCode(profile?.preferredLanguage)
     val isPremium = profile?.hasPremiumAccess() == true
@@ -105,6 +108,7 @@ fun StudioToolsScreen(
 
     val isModeUnlocked = when (selectedMode) {
         StudioMode.CAMERA -> isPremium || config.cameraEnabledForFree
+        StudioMode.IMAGE_CREATE -> true
         StudioMode.DAY_PLAN -> isPremium || config.dayPlanningForFree
         StudioMode.TRANSLATE -> isPremium || config.translationForFree
         StudioMode.SUMMARY, StudioMode.MESSAGE -> isPremium
@@ -397,7 +401,7 @@ fun StudioToolsScreen(
                                 Text(if (language == SathiLanguage.BN) "ভিডিও আপলোড ও বিশ্লেষণ করুন" else "Upload & Analyze Video")
                             }
 
-                            capturedBitmap?.let { bmp ->
+                                capturedBitmap?.let { bmp ->
                                 Spacer(modifier = Modifier.height(12.dp))
                                 Image(
                                     bitmap = bmp.asImageBitmap(),
@@ -408,6 +412,68 @@ fun StudioToolsScreen(
                                         .clip(RoundedCornerShape(14.dp)),
                                     contentScale = ContentScale.Crop
                                 )
+                            }
+                        } else if (selectedMode == StudioMode.IMAGE_CREATE) {
+                            OutlinedTextField(
+                                value = inputText,
+                                onValueChange = { inputText = it },
+                                label = {
+                                    Text(
+                                        if (language == SathiLanguage.BN) "কী ধরনের ছবি তৈরি করতে চান লিখুন"
+                                        else "Describe the image to create"
+                                    )
+                                },
+                                placeholder = {
+                                    Text(
+                                        if (language == SathiLanguage.BN) "যেমন: পাহাড়ের পাশে শান্ত নীল নদী"
+                                        else "e.g., Calm blue river near green hills"
+                                    )
+                                },
+                                minLines = 2,
+                                maxLines = 4,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("studio_image_prompt_input")
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Button(
+                                onClick = {
+                                    viewModel.generateImageFromPrompt(inputText, addToChat = false)
+                                },
+                                enabled = inputText.isNotBlank() && !studioLoading,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("studio_generate_image_button")
+                            ) {
+                                Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(if (language == SathiLanguage.BN) "নমুনা ছবি তৈরি করুন" else "Generate Sample Preview")
+                            }
+
+                            generatedPreview?.let { outcome ->
+                                Spacer(modifier = Modifier.height(14.dp))
+                                Image(
+                                    bitmap = outcome.bitmap.asImageBitmap(),
+                                    contentDescription = "Generated sample preview image",
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(190.dp)
+                                        .clip(RoundedCornerShape(14.dp)),
+                                    contentScale = ContentScale.Crop
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Surface(
+                                    color = MaterialTheme.colorScheme.secondaryContainer,
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = outcome.requiresFirebaseNotice,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        modifier = Modifier.padding(10.dp)
+                                    )
+                                }
                             }
                         } else {
                             val labelText = when (selectedMode) {

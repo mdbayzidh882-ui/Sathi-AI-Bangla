@@ -63,6 +63,7 @@ data class AppConfigEntity(
     val announcementActive: Boolean,
     val bannerAdEnabled: Boolean = true,
     val bannerAdUnitId: String = "ca-app-pub-3940256099942544/6300978111",
+    val bannerAdUrl: String = "https://auctionr.org/4/9ef9d1d918fa128597c9e3243b06d0ae",
     val updatedBy: String,
     val updatedAt: Long
 )
@@ -261,7 +262,7 @@ interface SathiDao {
         ChatSessionEntity::class,
         ChatMessageEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class SathiDatabase : RoomDatabase() {
@@ -317,6 +318,14 @@ abstract class SathiDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `app_config` ADD COLUMN `bannerAdUrl` TEXT NOT NULL DEFAULT 'https://auctionr.org/4/9ef9d1d918fa128597c9e3243b06d0ae'"
+                )
+            }
+        }
+
         fun getInstance(context: Context): SathiDatabase {
             return instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
@@ -324,7 +333,7 @@ abstract class SathiDatabase : RoomDatabase() {
                     SathiDatabase::class.java,
                     "sathi_local_db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .build()
                     .also { instance = it }
             }

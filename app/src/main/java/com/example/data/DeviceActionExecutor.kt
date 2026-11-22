@@ -1,5 +1,6 @@
 package com.example.data
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -10,10 +11,13 @@ import android.media.AudioManager
 import android.net.Uri
 import android.provider.AlarmClock
 import android.provider.CalendarContract
+import android.provider.ContactsContract
 import android.provider.Settings
+import androidx.core.content.ContextCompat
 import com.example.model.PendingConfirmation
 import com.example.model.PhoneActionType
 import com.example.model.SathiLanguage
+import com.example.overlay.SathiScreenReaderService
 import java.net.URLEncoder
 
 sealed interface ActionOutcome {
@@ -29,11 +33,13 @@ class DeviceActionExecutor(context: Context) {
         type: PhoneActionType,
         param: String,
         secondary: String,
-        language: SathiLanguage
+        language: SathiLanguage,
+        recipient: String = ""
     ): ActionOutcome {
         return when (type) {
             PhoneActionType.NONE,
-            PhoneActionType.WEB_SEARCH -> ActionOutcome.Executed("")
+            PhoneActionType.WEB_SEARCH,
+            PhoneActionType.GENERATE_IMAGE -> ActionOutcome.Executed("")
 
             PhoneActionType.YOUTUBE -> openYouTube(param, language)
             PhoneActionType.SET_ALARM -> setAlarm(param, secondary, language)
@@ -51,7 +57,8 @@ class DeviceActionExecutor(context: Context) {
                 PendingConfirmation(
                     PhoneActionType.SMS_CONFIRM,
                     param.ifBlank { "" },
-                    secondary
+                    secondary,
+                    recipientName = recipient
                 )
             )
             PhoneActionType.SOCIAL_MESSAGE_CONFIRM -> ActionOutcome.NeedsConfirmation(
@@ -59,7 +66,8 @@ class DeviceActionExecutor(context: Context) {
                     type = PhoneActionType.SOCIAL_MESSAGE_CONFIRM,
                     target = param.ifBlank { "WhatsApp" },
                     messageBody = secondary,
-                    extraParam = param.lowercase()
+                    extraParam = param.lowercase(),
+                    recipientName = recipient
                 )
             )
         }
@@ -67,7 +75,7 @@ class DeviceActionExecutor(context: Context) {
 
     fun executeConfirmedCall(target: String, language: SathiLanguage): ActionOutcome {
         return try {
-            val cleaned = target.filter { it.isDigit() || it == '+' }
+            val cleaned = resolvePhoneDigits(target)
             val uri = if (cleaned.isNotEmpty()) Uri.parse("tel:$cleaned") else Uri.parse("tel:")
             val intent = Intent(Intent.ACTION_DIAL, uri).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -85,7 +93,7 @@ class DeviceActionExecutor(context: Context) {
 
     fun executeConfirmedSms(target: String, body: String, language: SathiLanguage): ActionOutcome {
         return try {
-            val cleaned = target.filter { it.isDigit() || it == '+' }
+            val cleaned = resolvePhoneDigits(target)
             val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:$cleaned")).apply {
                 putExtra("sms_body", body)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -104,12 +112,13 @@ class DeviceActionExecutor(context: Context) {
     fun executeConfirmedSocialMessage(
         platform: String,
         messageBody: String,
-        language: SathiLanguage
+        language: SathiLanguage,
+        recipientName: String = ""
     ): ActionOutcome {
         val lower = platform.lowercase()
         val textToSend = messageBody.trim()
 
-        // Always copy drafted text to clipboard so pasting as a comment/reply takes 1 tap
+        // Always copy drafted text to clipboard so pasting into any comment/reply box takes 1 tap
         if (textToSend.isNotBlank()) {
             try {
                 val cm = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -121,7 +130,7 @@ class DeviceActionExecutor(context: Context) {
         val targetPackages = when {
             lower.contains("whatsapp") || lower.contains("হোয়াটস") || lower.contains("হোয়াটস") ->
                 listOf("com.whatsapp", "com.whatsapp.w4b")
-            lower.contains("messenger") || lower.contains("মেসেঞ্জার") ->
+            lower.contains("messenger") || lower.contains("মেসেঞ্জার") || lower.contains("ম্যাসেঞ্জার") ->
                 listOf("com.facebook.orca", "com.facebook.mlite")
             lower.contains("facebook") || lower.contains("ফেসবুক") ->
                 listOf("com.facebook.katana", "com.facebook.lite")
@@ -132,12 +141,43 @@ class DeviceActionExecutor(context: Context) {
             else -> listOf("com.whatsapp", "com.facebook.orca")
         }
 
+        // Stage Accessibility auto-fill if user has Sathi Screen Reader enabled for one-tap comment/reply filling
+        SathiScreenReaderService.stagePendingAutoFill(targetPackages, textToSend)
+
         val pm = appContext.packageManager
         val installedPkg = targetPackages.firstOrNull { pkg ->
             pm.getLaunchIntentForPackage(pkg) != null
         }
 
-        // Direct Share Intent works natively for WhatsApp & Messenger!
+        // 1. WhatsApp direct contact chat launch when a friend's number or contact is found
+        val isWhatsApp = lower.contains("whatsapp") || lower.contains("হোয়াটস") || lower.contains("হোয়াটস")
+        if (isWhatsApp && recipientName.isNotBlank()) {
+            val rawDigits = resolvePhoneDigits(recipientName)
+            val waPhone = normalizeWhatsAppNumber(rawDigits)
+            if (waPhone.length >= 10) {
+                try {
+                    val encoded = URLEncoder.encode(textToSend, "UTF-8")
+                    val waIntent = Intent(
+                        Intent.ACTION_VIEW,
+                        Uri.parse("https://api.whatsapp.com/send?phone=$waPhone&text=$encoded")
+                    ).apply {
+                        if (installedPkg != null) setPackage(installedPkg)
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    appContext.startActivity(waIntent)
+                    return ActionOutcome.Executed(
+                        if (language == SathiLanguage.BN) {
+                            "$recipientName-এর WhatsApp চ্যাটে লেখা প্রস্তুত করে খোলা হয়েছে।"
+                        } else {
+                            "Opened WhatsApp chat for $recipientName with your message ready."
+                        }
+                    )
+                } catch (_: Exception) {
+                }
+            }
+        }
+
+        // 2. Direct Share Intent works natively for WhatsApp & Messenger contact/reply selection!
         if (installedPkg != null && (installedPkg.contains("whatsapp") || installedPkg.contains("orca") || installedPkg.contains("mlite"))) {
             try {
                 val sendIntent = Intent(Intent.ACTION_SEND).apply {
@@ -147,9 +187,14 @@ class DeviceActionExecutor(context: Context) {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 appContext.startActivity(sendIntent)
+                val friendHintBn = if (recipientName.isNotBlank()) " '$recipientName' নির্বাচন করে পাঠান।" else ""
+                val friendHintEn = if (recipientName.isNotBlank()) " Pick '$recipientName' to send." else ""
                 return ActionOutcome.Executed(
-                    if (language == SathiLanguage.BN) "$platform-এ লেখা প্রস্তুত করে পাঠানো হয়েছে (ক্লিপবোর্ডেও কপি আছে)।"
-                    else "Opened $platform with your message ready."
+                    if (language == SathiLanguage.BN) {
+                        "$platform-এ লেখা প্রস্তুত করে খোলা হয়েছে (ক্লিপবোর্ডেও কপি আছে)।" + friendHintBn
+                    } else {
+                        "Opened $platform with your text ready (also copied).$friendHintEn"
+                    }
                 )
             } catch (_: Exception) {
             }
@@ -160,8 +205,11 @@ class DeviceActionExecutor(context: Context) {
                 launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 appContext.startActivity(launch)
                 return ActionOutcome.Executed(
-                    if (language == SathiLanguage.BN) "$platform খোলা হয়েছে ও লেখাটি কপি করা হয়েছে — কমেন্ট বক্সে পেস্ট করুন।"
-                    else "Opened $platform and copied your text — paste it into the comment box."
+                    if (language == SathiLanguage.BN) {
+                        "$platform খোলা হয়েছে ও লেখাটি কপি করা আছে — কমেন্ট বা রিপ্লাই বক্সে পেস্ট করুন।"
+                    } else {
+                        "Opened $platform and copied your text — paste it into the comment or reply box."
+                    }
                 )
             }
         }
@@ -182,6 +230,54 @@ class DeviceActionExecutor(context: Context) {
             )
         } catch (_: Exception) {
             openInstalledApp(platform, language)
+        }
+    }
+
+    private fun resolvePhoneDigits(targetOrName: String): String {
+        val directDigits = targetOrName.filter { it.isDigit() || it == '+' }
+        if (directDigits.count { it.isDigit() } >= 6) {
+            return directDigits
+        }
+        val queryName = targetOrName.trim()
+        if (queryName.length < 2) return ""
+
+        val hasContactPerm = ContextCompat.checkSelfPermission(
+            appContext,
+            Manifest.permission.READ_CONTACTS
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!hasContactPerm) return ""
+
+        return try {
+            val projection = arrayOf(
+                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                ContactsContract.CommonDataKinds.Phone.NUMBER
+            )
+            appContext.contentResolver.query(
+                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                projection,
+                "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} LIKE ?",
+                arrayOf("%$queryName%"),
+                null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val numberIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                    if (numberIdx >= 0) {
+                        cursor.getString(numberIdx).orEmpty().filter { it.isDigit() || it == '+' }
+                    } else ""
+                } else ""
+            }.orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    private fun normalizeWhatsAppNumber(raw: String): String {
+        val digits = raw.filter { it.isDigit() }
+        if (digits.isEmpty()) return ""
+        return when {
+            digits.startsWith("880") && digits.length >= 13 -> digits
+            digits.startsWith("01") && digits.length == 11 -> "88$digits"
+            else -> digits
         }
     }
 

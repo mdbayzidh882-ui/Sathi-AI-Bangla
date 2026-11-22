@@ -68,8 +68,19 @@ import com.example.overlay.SathiScreenShareService
 import com.example.overlay.SathiWakeWordService
 import java.security.MessageDigest
 
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.ui.text.input.VisualTransformation
+
 private enum class AdminTab(val label: String) {
     LIVE("Live Monitor"),
+    GOOGLE_KEY("Google চাবি"),
     CODES("Codes"),
     USERS("Users"),
     FEATURES("Features & Ads"),
@@ -91,6 +102,8 @@ fun AdminPanelScreen(
     val liveMessages by viewModel.adminLiveMessages.collectAsStateWithLifecycle()
     val allSessions by viewModel.adminAllSessions.collectAsStateWithLifecycle()
     val globalConfig by viewModel.globalConfig.collectAsStateWithLifecycle()
+    val localSettings by viewModel.localSettings.collectAsStateWithLifecycle()
+    val googleKeyCheckState by viewModel.googleKeyCheckState.collectAsStateWithLifecycle()
     val floatingRunning by SathiFloatingService.isRunning.collectAsStateWithLifecycle()
     val screenSharing by SathiScreenShareService.isSharing.collectAsStateWithLifecycle()
     val screenReaderActive by SathiScreenReaderService.isConnected.collectAsStateWithLifecycle()
@@ -190,6 +203,13 @@ fun AdminPanelScreen(
                         screenReaderActive = screenReaderActive,
                         wakeRunning = wakeRunning,
                         bannerAdEnabled = globalConfig.bannerAdEnabled
+                    )
+
+                    AdminTab.GOOGLE_KEY -> AdminGoogleKeyTab(
+                        savedKey = localSettings.customGeminiApiKey,
+                        checkState = googleKeyCheckState,
+                        onSaveAndVerify = { viewModel.saveAndVerifyGoogleApiKey(it) },
+                        onClear = { viewModel.saveAndVerifyGoogleApiKey("") }
                     )
 
                     AdminTab.CODES -> AdminCodesTab(
@@ -509,7 +529,9 @@ private fun AdminFeaturesTab(
     var announcementActive by remember(config) { mutableStateOf(config.announcementActive) }
     var announcementText by remember(config) { mutableStateOf(config.announcementText) }
     var bannerAdEnabled by remember(config) { mutableStateOf(config.bannerAdEnabled) }
+    var bannerAdUrl by remember(config) { mutableStateOf(config.bannerAdUrl) }
     var bannerAdUnitId by remember(config) { mutableStateOf(config.bannerAdUnitId) }
+    val isUrlValid = bannerAdUrl.isBlank() || sanitizeBannerHttpsUrl(bannerAdUrl) != null
 
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
@@ -532,9 +554,23 @@ private fun AdminFeaturesTab(
                     Text("Bottom Banner Ad (নিচে ছোট ব্যানার অ্যাড)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     FeatureToggleRow("Show Bottom Banner Ad", bannerAdEnabled) { bannerAdEnabled = it }
                     OutlinedTextField(
+                        value = bannerAdUrl,
+                        onValueChange = { bannerAdUrl = it },
+                        label = { Text("Banner Ad WebView URL (HTTPS)") },
+                        placeholder = { Text(com.example.model.AppConfig.DEFAULT_BANNER_AD_URL) },
+                        isError = !isUrlValid,
+                        supportingText = if (!isUrlValid) {
+                            { Text("Only valid public https:// URLs are allowed.") }
+                        } else null,
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("banner_ad_url_input")
+                    )
+                    OutlinedTextField(
                         value = bannerAdUnitId,
                         onValueChange = { bannerAdUnitId = it },
-                        label = { Text("AdMob Banner Unit ID") },
+                        label = { Text("Fallback AdMob Banner Unit ID") },
                         placeholder = { Text("ca-app-pub-3940256099942544/6300978111") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
@@ -555,6 +591,7 @@ private fun AdminFeaturesTab(
                         modifier = Modifier.fillMaxWidth()
                     )
                     Button(
+                        enabled = isUrlValid,
                         onClick = {
                             onSave(
                                 config.copy(
@@ -565,6 +602,7 @@ private fun AdminFeaturesTab(
                                     announcementActive = announcementActive,
                                     announcementText = announcementText,
                                     bannerAdEnabled = bannerAdEnabled,
+                                    bannerAdUrl = sanitizeBannerHttpsUrl(bannerAdUrl) ?: "",
                                     bannerAdUnitId = bannerAdUnitId.trim()
                                 )
                             )
@@ -683,4 +721,246 @@ private fun AdminLogsTab(logs: List<com.example.model.ActivityLog>) {
 private fun sha256Hex(input: String): String {
     val bytes = MessageDigest.getInstance("SHA-256").digest("sathi_salt_$input".toByteArray())
     return bytes.joinToString("") { "%02x".format(it) }
+}
+
+internal fun maskApiKeyPreview(key: String): String {
+    val trimmed = key.trim()
+    if (trimmed.isEmpty()) return ""
+    if (trimmed.length <= 8) return "••••••••"
+    return "${trimmed.take(4)}••••••${trimmed.takeLast(4)}"
+}
+
+@Composable
+private fun AdminGoogleKeyTab(
+    savedKey: String,
+    checkState: GoogleKeyCheckState,
+    onSaveAndVerify: (String) -> Unit,
+    onClear: () -> Unit
+) {
+    val context = LocalContext.current
+    var keyInput by remember(savedKey) { mutableStateOf(savedKey) }
+    var showKey by remember { mutableStateOf(false) }
+    var pasteFeedback by remember { mutableStateOf<String?>(null) }
+
+    val isConnected = savedKey.isNotBlank() && checkState !is GoogleKeyCheckState.Failed
+
+    LazyColumn(
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = if (isConnected) {
+                        MaterialTheme.colorScheme.primaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surfaceVariant
+                    }
+                )
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.VpnKey,
+                            contentDescription = null,
+                            tint = if (isConnected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (isConnected) {
+                                "Google সার্চ ও AI চাবি সংযুক্ত আছে ✓"
+                            } else {
+                                "Google সার্চ ও AI চাবি (API Key)"
+                            },
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Text(
+                        text = if (savedKey.isNotBlank()) {
+                            "সংরক্ষিত চাবি: ${maskApiKeyPreview(savedKey)} — এখন সাথী সরাসরি Google Search দিয়ে উত্তর খুঁজতে পারবে।"
+                        } else {
+                            "নিচে আপনার Google AI Studio-এর চাবি (API Key) কপি করে পেস্ট করুন। এতে কোনো Firebase সেটআপ ছাড়াই সাথী সরাসরি Google থেকে সার্চ করবে।"
+                        },
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+        }
+
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "চাবি পেস্ট ও সংযোগ করুন",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    OutlinedTextField(
+                        value = keyInput,
+                        onValueChange = {
+                            keyInput = it
+                            pasteFeedback = null
+                        },
+                        label = { Text("Google API Key (AIza...)") },
+                        placeholder = { Text("এখানে চাবি পেস্ট করুন") },
+                        singleLine = true,
+                        visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(onClick = { showKey = !showKey }) {
+                                Icon(
+                                    imageVector = if (showKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = if (showKey) "Hide key" else "Show key"
+                                )
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("admin_google_key_input")
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                val clipText = cm?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()?.trim().orEmpty()
+                                if (clipText.isBlank()) {
+                                    pasteFeedback = "ক্লিপবোর্ডে কোনো লেখা কপি করা নেই।"
+                                } else {
+                                    keyInput = clipText
+                                    pasteFeedback = "ক্লিপবোর্ড থেকে চাবি পেস্ট করা হয়েছে!"
+                                }
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("admin_paste_google_key_button")
+                        ) {
+                            Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("পেস্ট করুন")
+                        }
+
+                        Button(
+                            enabled = checkState !is GoogleKeyCheckState.Verifying,
+                            onClick = {
+                                pasteFeedback = null
+                                onSaveAndVerify(keyInput)
+                            },
+                            modifier = Modifier
+                                .weight(1.4f)
+                                .testTag("admin_save_google_key_button")
+                        ) {
+                            if (checkState is GoogleKeyCheckState.Verifying) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("যাচাই চলছে...")
+                            } else {
+                                Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("সংরক্ষণ ও চালু করুন")
+                            }
+                        }
+                    }
+
+                    if (savedKey.isNotBlank()) {
+                        OutlinedButton(
+                            onClick = {
+                                keyInput = ""
+                                pasteFeedback = null
+                                onClear()
+                            },
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("admin_clear_google_key_button")
+                        ) {
+                            Text("সংরক্ষিত চাবি মুছুন")
+                        }
+                    }
+
+                    if (!pasteFeedback.isNullOrBlank()) {
+                        Text(
+                            text = pasteFeedback.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+
+                    when (checkState) {
+                        is GoogleKeyCheckState.Connected -> {
+                            Text(
+                                text = "✓ ${checkState.message}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        is GoogleKeyCheckState.Failed -> {
+                            Text(
+                                text = checkState.message,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                        else -> Unit
+                    }
+                }
+            }
+        }
+
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "কীভাবে Google থেকে চাবি নেবেন (সহজ ৩ ধাপ)",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "১. নিচের 'চাবি তৈরি করুন' বাটনে চাপ দিয়ে ব্রাউজার খুলুন।\n" +
+                            "২. আপনার Gmail দিয়ে লগইন করে 'Create API key' চেপে কোডটি Copy করুন।\n" +
+                            "৩. এখানে ফিরে 'পেস্ট করুন' এবং 'সংরক্ষণ ও চালু করুন' বাটনে চাপ দিন — ব্যস, কোনো Firebase ছাড়াই Google সার্চ চালু!",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                runCatching {
+                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://aistudio.google.com/apikey")).apply {
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    }
+                                    context.startActivity(intent)
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("চাবি তৈরি করুন")
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                cm?.setPrimaryClip(ClipData.newPlainText("Google AI Studio Key URL", "https://aistudio.google.com/apikey"))
+                                pasteFeedback = "লিংক কপি হয়েছে: aistudio.google.com/apikey"
+                            }
+                        ) {
+                            Icon(Icons.Default.ContentCopy, contentDescription = "Copy link", modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("লিংক কপি")
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
