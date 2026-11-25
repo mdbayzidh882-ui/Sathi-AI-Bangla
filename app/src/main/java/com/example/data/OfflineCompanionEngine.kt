@@ -47,11 +47,23 @@ class OfflineCompanionEngine(
             lower == "আপনি কে" || lower.contains("who are you")
         ) {
             val reply = if (language == SathiLanguage.BN) {
-                "আসসালামু আলাইকুম! আমার নাম সাথী (Sathi), আপনার ব্যক্তিগত এআই বন্ধু। আমাকে বানিয়েছেন মোহাম্মদ বাইজিদ হাসান।"
+                "আসসালামু আলাইকুম! আমার নাম সাথী এআই (Sathi AI), আপনার ব্যক্তিগত এআই বন্ধু। আমাকে বানিয়েছেন মোহাম্মদ বাইজিদ হাসান।"
             } else {
-                "Assalamu Alaikum! My name is Sathi, your personal AI companion created by Mohammad Bayzid Hasan."
+                "Assalamu Alaikum! My name is Sathi AI (সাথী এআই), your personal AI companion created by Mohammad Bayzid Hasan."
             }
             return turn(reply, SathiMood.HAPPY)
+        }
+
+        // 2b. Offline self-capability answer
+        SathiAiService.detectCapabilitySelfQuery(lower, language, hasApiKey = false)?.let { cap ->
+            return turn(
+                reply = if (language == SathiLanguage.BN) {
+                    "$cap\n\n(নোট: এখন আপনি অফলাইন মোডে আছেন—ইন্টারনেট ছাড়াই ডাউনলোড করা বিষয়, সময়, গণিত, একক রূপান্তর, গল্প-কৌতুক ও ফোন কন্ট্রোল ব্যবহার করতে পারবেন।)"
+                } else {
+                    "$cap\n\n(Note: You are currently offline — saved pack articles, time, math, unit conversion, stories, and phone controls work without internet.)"
+                },
+                mood = SathiMood.HAPPY
+            )
         }
 
         // 3. Time / Date / Day (works accurately 100% offline!)
@@ -85,25 +97,33 @@ class OfflineCompanionEngine(
             return turn(reply, SathiMood.HAPPY, PhoneActionType.GENERATE_IMAGE, imgPrompt)
         }
 
-        // 6. Social Apps & Friend WhatsApp/Messenger SMS / Comment / Reply offline
+        // 6. Social Apps & Friend WhatsApp/Messenger Search / SMS / Comment / Reply offline
         SathiAiService.detectSocialActionOrOpen(text, lower, language)?.let { socialTurn ->
             return socialTurn
         }
 
-        // Open YouTube, Settings, or other phone apps offline
+        // Open or search YouTube accurately offline
+        SathiAiService.detectYouTubeAction(text, lower, language)?.let { ytTurn ->
+            return ytTurn
+        }
+
+        // Open Settings or other phone apps offline
         if (lower.startsWith("open ") || lower.startsWith("launch ") ||
             lower.contains("খোলো") || lower.contains("খুলো") || lower.contains("চালু করো") ||
             lower.contains("ঢোকো") || lower.contains("ঢোকাও") || lower.contains("ঢুকো")
         ) {
             val offlineAppTarget = text
                 .replace(Regex("(open|launch)", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("(তুমি|আপনি|দয়া করে|দয়া করে|প্লিজ|একটু)"), "")
                 .replace("খোলো", "")
                 .replace("খুলো", "")
                 .replace("চালু করো", "")
                 .replace("ঢোকো", "")
                 .replace("ঢোকাও", "")
                 .replace("ঢুকো", "")
+                .replace("অ্যাপে", "")
                 .replace("অ্যাপ", "")
+                .replace(Regex("\\s+"), " ")
                 .trim()
             if (offlineAppTarget.isNotBlank()) {
                 val reply = if (language == SathiLanguage.BN) {
@@ -179,21 +199,27 @@ class OfflineCompanionEngine(
             return turn(reply, SathiMood.WARM, PhoneActionType.CALL_CONFIRM, digits)
         }
 
-        // 9. Stories, Jokes, Poems offline!
-        if (lower.contains("গল্প") || lower.contains("কাহিনী") || lower.contains("কাহিনি") || lower.contains("story")) {
-            val story = SathiAiService.nextStory(language, storyCursor++, text)
-            return turn(story, SathiMood.HAPPY)
-        }
-        if (lower.contains("কৌতুক") || lower.contains("জোক") || lower.contains("joke") || lower.contains("ধাঁধা")) {
-            return turn(SathiAiService.nextJoke(language, jokeCursor++), SathiMood.PLAYFUL)
-        }
-        if (lower.contains("কবিতা") || lower.contains("poem")) {
-            return turn(SathiAiService.nextPoem(language, jokeCursor++), SathiMood.WARM)
+        // 9. Stories, Jokes, Poems offline (only creative entertainment, not research about named works)
+        val asksResearchAboutTitle = lower.contains("সম্পর্কে") || lower.contains("লেখক") ||
+            lower.contains("সারাংশ") || lower.contains("বিশ্লেষণ") || lower.contains("কার লেখা")
+        if (!asksResearchAboutTitle) {
+            if (lower.contains("গল্প") || lower.contains("কাহিনী") || lower.contains("কাহিনি") || lower.contains("story")) {
+                val story = SathiAiService.nextStory(language, storyCursor++, text)
+                return turn(story, SathiMood.HAPPY)
+            }
+            if (lower.contains("কৌতুক") || lower.contains("জোক") || lower.contains("joke") || lower.contains("ধাঁধা")) {
+                return turn(SathiAiService.nextJoke(language, jokeCursor++), SathiMood.PLAYFUL)
+            }
+            if (lower.contains("কবিতা") || lower.contains("poem")) {
+                return turn(SathiAiService.nextPoem(language, jokeCursor++), SathiMood.WARM)
+            }
         }
 
-        // 10. Sad / Comforting mood
-        if (lower.contains("sad") || lower.contains("মন খারাপ") || lower.contains("কষ্ট") ||
-            lower.contains("একা") || lower.contains("lonely") || lower.contains("tired") || lower.contains("ক্লান্ত")
+        // 10. Sad / Comforting mood (short personal turns only)
+        val wordCount = text.split(Regex("\\s+")).count { it.isNotBlank() }
+        val isShortTurn = wordCount <= 5 && !text.contains("?") && !text.contains("কেন") && !text.contains("কীভাবে")
+        if (isShortTurn && (lower.contains("sad") || lower.contains("মন খারাপ") || lower.contains("কষ্ট") ||
+                lower.contains("একা") || lower.contains("lonely") || lower.contains("tired") || lower.contains("ক্লান্ত"))
         ) {
             val reply = if (language == SathiLanguage.BN) {
                 "$userName, মন খারাপ করবেন না। আমি আপনার সাথী—সবসময় আপনার পাশেই আছি। গভীর শ্বাস নিন, কঠিন সময় পেরিয়ে আলো আসবেই।"
@@ -203,9 +229,9 @@ class OfflineCompanionEngine(
             return turn(reply, SathiMood.COMFORTING)
         }
 
-        // 11. Happy / Greeting
-        if (lower.contains("hello") || lower.contains("hi") || lower.contains("হ্যালো") ||
-            lower.contains("সালাম") || lower.contains("আসসালামু") || lower.contains("কেমন আছ") || lower.contains("good morning")
+        // 11. Happy / Greeting (short greeting turns only)
+        if (isShortTurn && (lower.contains("hello") || lower.contains("hi") || lower.contains("হ্যালো") ||
+                lower.contains("সালাম") || lower.contains("আসসালামু") || lower.contains("কেমন আছ") || lower.contains("good morning"))
         ) {
             val reply = if (language == SathiLanguage.BN) {
                 "আসসালামু আলাইকুম $userName! আমি আপনার অফলাইন সাথী। আলহামদুলিল্লাহ ভালো আছি — গল্প, কৌতুক, একক রূপান্তর, সাধারণ জ্ঞান বা ফোন কন্ট্রোলের জন্য আমাকে বলুন!"
@@ -215,18 +241,27 @@ class OfflineCompanionEngine(
             return turn(reply, SathiMood.HAPPY)
         }
 
-        // 12. Live web queries gracefully explained offline + suggest custom offline download
+        // 12. Live news & web queries gracefully explained offline
+        if (lower.contains("খবর") || lower.contains("সংবাদ") || lower.contains("news")) {
+            val reply = if (language == SathiLanguage.BN) {
+                "সারা বাংলাদেশের আজকের তাজা খবর ও শিরোনাম আনতে ইন্টারনেট (Wi-Fi বা মোবাইল ডাটা) প্রয়োজন। নেটওয়ার্ক চালু হলেই আমাকে বলুন 'আজকের খবর বলো'—আমি সাথে সাথে সারা বাংলাদেশের খবর পড়ে শোনাব। এখন অফলাইনে চাইলে যেকোনো জেলার সাধারণ তথ্য, ইতিহাস, ইসলাম, স্বাস্থ্য বা গল্প শুনতে পারেন!"
+            } else {
+                "Today's live nationwide news requires an internet connection. Once back online, ask 'Tell me today's news' and I will fetch live headlines. Right now offline, you can ask about any saved topic, stories, math, or phone controls!"
+            }
+            return turn(reply, SathiMood.WARM)
+        }
+
         if (SathiAiService.shouldTriggerWebSearch(text, lower)) {
             val savedPreview = packManager?.getAvailableTopicsPreview(5).orEmpty()
             val previewHintBn = if (savedPreview.isNotEmpty()) {
-                "\n\nবর্তমান অফলাইন প্যাকে সংরক্ষিত কিছু বিষয়: ${savedPreview.joinToString(", ")}। চাইলে সেটিংস থেকে যেকোনো নতুন বিষয়ও অফলাইনে ডাউনলোড করে রাখতে পারবেন!"
+                "\n\nবর্তমান অফলাইন প্যাকে সংরক্ষিত কিছু বিষয়: ${savedPreview.joinToString(", ")}। চাইলে সেটিংস থেকে আরও ১৫০+ পূর্ণ বিষয় ডাউনলোড করে রাখতে পারবেন!"
             } else {
-                "\n\nসেটিংস → 'অফলাইন প্যাক আপডেট' দিলে আরও অনেক বিষয় অফলাইনেই জানতে পারবেন।"
+                "\n\nসেটিংস → 'অফলাইন প্যাক ডাউনলোড/আপডেট' দিলে আরও ১৫০+ বিষয় অফলাইনেই জানতে পারবেন।"
             }
             val reply = if (language == SathiLanguage.BN) {
                 "আমি এখন অফলাইন মোডে আছি, তাই লাইভ ওয়েব সার্চের জন্য ইন্টারনেট প্রয়োজন।$previewHintBn"
             } else {
-                "I'm currently in Offline Mode, so live web search needs internet. You can download custom topics or update the Offline Pack in Settings to answer even more offline!"
+                "I'm currently in Offline Mode, so live web search needs internet. Update the Deep Offline Pack in Settings to answer 150+ topics without internet!"
             }
             return turn(reply, SathiMood.WARM)
         }

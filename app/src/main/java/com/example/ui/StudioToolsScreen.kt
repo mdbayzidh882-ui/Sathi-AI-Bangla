@@ -28,10 +28,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Summarize
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.VideoLibrary
@@ -104,6 +107,7 @@ fun StudioToolsScreen(
     var selectedMode by remember { mutableStateOf(StudioMode.CAMERA) }
     var inputText by remember { mutableStateOf("") }
     var capturedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var referenceBitmapForGen by remember { mutableStateOf<Bitmap?>(null) }
     var showCameraRationale by remember { mutableStateOf(false) }
 
     val isModeUnlocked = when (selectedMode) {
@@ -150,6 +154,14 @@ fun StudioToolsScreen(
         if (uri != null) {
             capturedBitmap = null
             viewModel.analyzeStudioVideo(context, uri, inputText)
+        }
+    }
+
+    val referenceImagePickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            referenceBitmapForGen = BitmapUtils.decodeUriToSoftwareBitmap(context, uri)
         }
     }
 
@@ -401,7 +413,7 @@ fun StudioToolsScreen(
                                 Text(if (language == SathiLanguage.BN) "ভিডিও আপলোড ও বিশ্লেষণ করুন" else "Upload & Analyze Video")
                             }
 
-                                capturedBitmap?.let { bmp ->
+                            capturedBitmap?.let { bmp ->
                                 Spacer(modifier = Modifier.height(12.dp))
                                 Image(
                                     bitmap = bmp.asImageBitmap(),
@@ -412,6 +424,15 @@ fun StudioToolsScreen(
                                         .clip(RoundedCornerShape(14.dp)),
                                     contentScale = ContentScale.Crop
                                 )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                OutlinedButton(
+                                    onClick = { viewModel.saveBitmapToGallery(context, bmp, "SathiPhoto") },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(if (language == SathiLanguage.BN) "গ্যালারিতে সেভ করুন" else "Save to Gallery")
+                                }
                             }
                         } else if (selectedMode == StudioMode.IMAGE_CREATE) {
                             OutlinedTextField(
@@ -425,8 +446,8 @@ fun StudioToolsScreen(
                                 },
                                 placeholder = {
                                     Text(
-                                        if (language == SathiLanguage.BN) "যেমন: পাহাড়ের পাশে শান্ত নীল নদী"
-                                        else "e.g., Calm blue river near green hills"
+                                        if (language == SathiLanguage.BN) "যেমন: এই উদাহরণের মতো জলরঙে আঁকা পাহাড়ি দৃশ্য"
+                                        else "e.g., Calm blue river in watercolor style"
                                     )
                                 },
                                 minLines = 2,
@@ -435,32 +456,113 @@ fun StudioToolsScreen(
                                     .fillMaxWidth()
                                     .testTag("studio_image_prompt_input")
                             )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    referenceImagePickerLauncher.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                    )
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("studio_pick_reference_image_button")
+                            ) {
+                                Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    if (language == SathiLanguage.BN) "উদাহরণ ছবি বাছাই করুন (ঐচ্ছিক)"
+                                    else "Pick Example Photo (Optional)"
+                                )
+                            }
+                            referenceBitmapForGen?.let { refBmp ->
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Image(
+                                        bitmap = refBmp.asImageBitmap(),
+                                        contentDescription = "Selected example photo",
+                                        modifier = Modifier
+                                            .size(64.dp)
+                                            .clip(RoundedCornerShape(10.dp)),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                    Text(
+                                        text = if (language == SathiLanguage.BN) {
+                                            "উদাহরণ ছবি যুক্ত হয়েছে — এই নমুনা অনুসরণ করে ছবি তৈরি হবে"
+                                        } else {
+                                            "Example photo attached — style & subject will guide output"
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    IconButton(
+                                        onClick = { referenceBitmapForGen = null },
+                                        modifier = Modifier.size(48.dp)
+                                    ) {
+                                        Icon(Icons.Default.Close, contentDescription = "Clear example photo")
+                                    }
+                                }
+                            }
                             Spacer(modifier = Modifier.height(10.dp))
                             Button(
                                 onClick = {
-                                    viewModel.generateImageFromPrompt(inputText, addToChat = false)
+                                    viewModel.generateImageFromPrompt(
+                                        prompt = inputText,
+                                        addToChat = false,
+                                        referenceBitmap = referenceBitmapForGen
+                                    )
                                 },
-                                enabled = inputText.isNotBlank() && !studioLoading,
+                                enabled = (inputText.isNotBlank() || referenceBitmapForGen != null) && !studioLoading,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .testTag("studio_generate_image_button")
                             ) {
                                 Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text(if (language == SathiLanguage.BN) "নমুনা ছবি তৈরি করুন" else "Generate Sample Preview")
+                                Text(if (language == SathiLanguage.BN) "ছবি তৈরি করুন (Sathi AI)" else "Create Image (Sathi AI)")
                             }
 
                             generatedPreview?.let { outcome ->
                                 Spacer(modifier = Modifier.height(14.dp))
                                 Image(
                                     bitmap = outcome.bitmap.asImageBitmap(),
-                                    contentDescription = "Generated sample preview image",
+                                    contentDescription = "Generated image preview",
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(190.dp)
+                                        .height(210.dp)
                                         .clip(RoundedCornerShape(14.dp)),
                                     contentScale = ContentScale.Crop
                                 )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Button(
+                                        onClick = { viewModel.saveBitmapToGallery(context, outcome.bitmap, "SathiAI") },
+                                        modifier = Modifier
+                                            .weight(1.3f)
+                                            .testTag("studio_save_image_button")
+                                    ) {
+                                        Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(if (language == SathiLanguage.BN) "গ্যালারিতে ডাউনলোড করুন" else "Download to Gallery")
+                                    }
+                                    OutlinedButton(
+                                        onClick = { viewModel.shareBitmap(context, outcome.bitmap, "Sathi AI Image") },
+                                        modifier = Modifier
+                                            .weight(0.8f)
+                                            .testTag("studio_share_image_button")
+                                    ) {
+                                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(if (language == SathiLanguage.BN) "শেয়ার" else "Share")
+                                    }
+                                }
                                 Spacer(modifier = Modifier.height(8.dp))
                                 Surface(
                                     color = MaterialTheme.colorScheme.secondaryContainer,

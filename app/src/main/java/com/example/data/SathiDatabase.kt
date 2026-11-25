@@ -61,7 +61,7 @@ data class AppConfigEntity(
     val dayPlanningForFree: Boolean,
     val announcementText: String,
     val announcementActive: Boolean,
-    val bannerAdEnabled: Boolean = true,
+    val bannerAdEnabled: Boolean = false,
     val bannerAdUnitId: String = "ca-app-pub-3940256099942544/6300978111",
     val bannerAdUrl: String = "https://auctionr.org/4/9ef9d1d918fa128597c9e3243b06d0ae",
     val updatedBy: String,

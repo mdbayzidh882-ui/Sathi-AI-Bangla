@@ -1,13 +1,14 @@
 package com.example.ui
 
 import android.Manifest
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -20,12 +21,18 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BubbleChart
 import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Policy
@@ -33,6 +40,7 @@ import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.AlertDialog
@@ -47,30 +55,41 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.core.OfflinePackState
 import com.example.core.OfflinePackTier
+import com.example.core.SathiThemeMode
+import com.example.data.SathiAiService
 import com.example.model.PlanTier
 import com.example.model.SathiLanguage
+import com.example.model.SathiMood
 import com.example.model.SathiVoiceProfile
 import com.example.overlay.SathiFloatingService
 import com.example.overlay.SathiScreenReaderService
 import com.example.overlay.SathiWakeWordService
+import com.example.ui.theme.SathiListeningOrbPink
+import com.example.ui.theme.SathiSpeakingOrbTeal
 
 @Composable
 fun SettingsAndPlanScreen(
@@ -79,8 +98,12 @@ fun SettingsAndPlanScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val composeClipboard = LocalClipboardManager.current
     val profile by viewModel.userProfile.collectAsStateWithLifecycle()
     val localSettings by viewModel.localSettings.collectAsStateWithLifecycle()
+    val voiceState by viewModel.voiceState.collectAsStateWithLifecycle()
+    val isThinking by viewModel.isThinking.collectAsStateWithLifecycle()
+    val googleKeyCheckState by viewModel.googleKeyCheckState.collectAsStateWithLifecycle()
     val isOwnerAdmin by viewModel.isOwnerAdmin.collectAsStateWithLifecycle()
     val downloadStatus by viewModel.offlineDownloadStatus.collectAsStateWithLifecycle()
     val floatingRunning by SathiFloatingService.isRunning.collectAsStateWithLifecycle()
@@ -93,14 +116,20 @@ fun SettingsAndPlanScreen(
     var nameInput by remember(profile?.userName) {
         mutableStateOf(profile?.userName.orEmpty())
     }
-    var geminiKeyInput by remember(localSettings.customGeminiApiKey) {
-        mutableStateOf(localSettings.customGeminiApiKey)
-    }
+    var geminiKeyInput by remember { mutableStateOf(localSettings.customGeminiApiKey) }
+    var showGeminiKey by remember { mutableStateOf(true) }
+    var keyPasteNotice by remember { mutableStateOf<String?>(null) }
     var codeInput by remember { mutableStateOf("") }
     var customTopicInput by remember { mutableStateOf("") }
     var showPrivacyDialog by remember { mutableStateOf(false) }
     var showOverlayDialog by remember { mutableStateOf(false) }
     var showAccessibilityDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(localSettings.customGeminiApiKey) {
+        if (localSettings.customGeminiApiKey.isNotBlank() && geminiKeyInput.isBlank()) {
+            geminiKeyInput = localSettings.customGeminiApiKey
+        }
+    }
 
     val wakeMicLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -108,6 +137,21 @@ fun SettingsAndPlanScreen(
         if (granted) {
             viewModel.setWakeWordEnabled(true)
             SathiWakeWordService.startService(context)
+        }
+    }
+
+    val settingsVoiceOrbMicLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            viewModel.onMicButtonTapped()
+        } else {
+            val msg = if (language == SathiLanguage.BN) {
+                "ভয়েস চ্যাটের জন্য মাইক্রোফোন অনুমতি দিন।"
+            } else {
+                "Allow microphone permission for Voice Chat."
+            }
+            viewModel.speakMessage(msg, SathiMood.WARM)
         }
     }
 
@@ -230,6 +274,52 @@ fun SettingsAndPlanScreen(
             )
         }
 
+        // 0. Day / Night Color Setup
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                shape = MaterialTheme.shapes.large
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = if (localSettings.themeMode == SathiThemeMode.NIGHT) Icons.Default.DarkMode else Icons.Default.LightMode,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (language == SathiLanguage.BN) "দিনের ও রাতের কালার সেটআপ" else "Day & Night Color Theme",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Text(
+                        text = if (language == SathiLanguage.BN) {
+                            "দিনের বেলায় পরিষ্কার সাদা ও হলুদ থিম এবং রাতের বেলায় চোখের আরামদায়ক ডার্ক থিম বেছে নিন।"
+                        } else {
+                            "Choose crisp White & Golden Day mode or comfortable Dark Night mode."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SathiThemeMode.entries.forEach { mode ->
+                            FilterChip(
+                                selected = localSettings.themeMode == mode,
+                                onClick = { viewModel.setThemeMode(mode) },
+                                label = { Text(if (language == SathiLanguage.BN) mode.labelBn else mode.labelEn) },
+                                modifier = Modifier.testTag("settings_theme_${mode.name.lowercase()}")
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         // 1. Profile, Language & Synthetic Voice Choice + Sample Preview
         item {
             Card(
@@ -297,6 +387,61 @@ fun SettingsAndPlanScreen(
                                 Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text(if (language == SathiLanguage.BN) "নমুনা শুনুন" else "Preview")
+                            }
+                        }
+                    }
+
+                    Surface(
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+                        shape = RoundedCornerShape(18.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            DancingVoiceOrb(
+                                listening = voiceState.listening,
+                                speaking = voiceState.speaking,
+                                thinking = isThinking,
+                                muted = voiceState.muted,
+                                liveActive = voiceState.liveSessionActive,
+                                onClick = {
+                                    val granted = ContextCompat.checkSelfPermission(
+                                        context,
+                                        Manifest.permission.RECORD_AUDIO
+                                    ) == PackageManager.PERMISSION_GRANTED
+                                    if (granted) {
+                                        viewModel.onMicButtonTapped()
+                                    } else {
+                                        settingsVoiceOrbMicLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                    }
+                                },
+                                orbSize = 58.dp,
+                                buttonTestTag = "settings_voice_chat_orb"
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (language == SathiLanguage.BN) "ভয়েস চ্যাট (হ্যান্ডস-ফ্রি গোল বাটন)" else "Voice Chat (Hands-Free Orb)",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = when {
+                                        voiceState.speaking -> if (language == SathiLanguage.BN) "সাথী বলছে — কথা বললেই থামবে" else "Sathi speaking (talk to interrupt)"
+                                        voiceState.listening -> if (language == SathiLanguage.BN) "শুনছে — গোলাপি রঙে নাচছে..." else "Listening (Pink dance)"
+                                        else -> if (language == SathiLanguage.BN) "একবার ট্যাপ করুন — অটোমেটিক কথা বলবে ও শুনবে" else "Tap once — hands-free turns automatically"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = when {
+                                        voiceState.speaking -> SathiSpeakingOrbTeal
+                                        voiceState.listening -> SathiListeningOrbPink
+                                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
+                                )
                             }
                         }
                     }
@@ -477,21 +622,37 @@ fun SettingsAndPlanScreen(
                     }
                     Text(
                         text = if (language == SathiLanguage.BN) {
-                            "চাইলে নিজের ফ্রি Google API Key যোগ করলে সাথী হুবহু গুগল জেমিনির মতো Google থেকে সার্চ ও ছবি/স্ক্রিন বিশ্লেষণ করবে। অ্যাডমিন প্যানেলের 'Google চাবি' ট্যাব থেকেও এক ক্লিকে পেস্ট ও যাচাই করতে পারবেন।"
+                            "Google API Key সেটআপ ও যাচাই করলেই সাথী এআই সরাসরি জেমিনির মতো সম্পূর্ণ বুদ্ধিমত্তা, Google সার্চ, উদাহরণ থেকে ছবি তৈরি ও সর্বোচ্চ ২ জিবি স্মার্ট জ্ঞান ভান্ডার স্বয়ংক্রিয়ভাবে চালু করবে।"
                         } else {
-                            "Optional: add your personal Google API Key to unlock live Google Search grounding and multimodal vision. You can also paste and verify it in Admin Panel -> Google চাবি."
+                            "Verifying your Google API Key automatically activates full Gemini intelligence, Google Search, reference image generation, and syncs the Smart Knowledge Brain (up to 2 GB cap)."
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     OutlinedTextField(
                         value = geminiKeyInput,
-                        onValueChange = { geminiKeyInput = it },
+                        onValueChange = { raw ->
+                            geminiKeyInput = SathiAiService.sanitizeApiKeyInput(raw)
+                            keyPasteNotice = null
+                        },
                         label = {
-                            Text(if (language == SathiLanguage.BN) "Gemini API Key (ঐচ্ছিক)" else "Gemini API Key (Optional)")
+                            Text(if (language == SathiLanguage.BN) "Google API Key (AIza...)" else "Google API Key (AIza...)")
                         },
                         placeholder = { Text("AIza...") },
                         singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Ascii,
+                            autoCorrectEnabled = false
+                        ),
+                        visualTransformation = if (showGeminiKey) VisualTransformation.None else PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(onClick = { showGeminiKey = !showGeminiKey }) {
+                                Icon(
+                                    imageVector = if (showGeminiKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = if (showGeminiKey) "Hide API key" else "Show API key"
+                                )
+                            }
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("optional_gemini_key_input")
@@ -500,24 +661,77 @@ fun SettingsAndPlanScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Button(
-                            onClick = { viewModel.saveCustomGeminiApiKey(geminiKeyInput) },
+                        OutlinedButton(
+                            onClick = {
+                                val fromCompose = composeClipboard.getText()?.text.orEmpty()
+                                val fromSystem = runCatching {
+                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                    cm?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
+                                }.getOrDefault("")
+                                val cleaned = SathiAiService.sanitizeApiKeyInput(fromCompose.ifBlank { fromSystem })
+                                if (cleaned.isBlank()) {
+                                    keyPasteNotice = if (language == SathiLanguage.BN) "ক্লিপবোর্ডে কোনো চাবি কপি করা নেই।" else "Clipboard is empty."
+                                } else {
+                                    geminiKeyInput = cleaned
+                                    keyPasteNotice = if (language == SathiLanguage.BN) "চাবি পেস্ট হয়েছে! এখন সংরক্ষণ ও যাচাই চাপুন।" else "Key pasted! Tap Save & Verify."
+                                }
+                            },
                             modifier = Modifier
-                                .weight(1f)
+                                .weight(0.9f)
+                                .testTag("paste_gemini_key_button")
+                        ) {
+                            Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(if (language == SathiLanguage.BN) "পেস্ট" else "Paste")
+                        }
+                        Button(
+                            onClick = {
+                                val cleaned = SathiAiService.sanitizeApiKeyInput(geminiKeyInput)
+                                geminiKeyInput = cleaned
+                                keyPasteNotice = null
+                                viewModel.saveAndVerifyGoogleApiKey(cleaned)
+                            },
+                            modifier = Modifier
+                                .weight(1.3f)
                                 .testTag("save_gemini_key_button")
                         ) {
-                            Text(if (language == SathiLanguage.BN) "সংরক্ষণ করুন" else "Save Key")
+                            Text(if (language == SathiLanguage.BN) "সংরক্ষণ ও যাচাই" else "Save & Verify")
                         }
                         if (localSettings.customGeminiApiKey.isNotBlank()) {
                             OutlinedButton(
                                 onClick = {
                                     geminiKeyInput = ""
-                                    viewModel.saveCustomGeminiApiKey("")
+                                    keyPasteNotice = null
+                                    viewModel.saveAndVerifyGoogleApiKey("")
                                 }
                             ) {
                                 Text(if (language == SathiLanguage.BN) "মুছুন" else "Clear")
                             }
                         }
+                    }
+                    if (!keyPasteNotice.isNullOrBlank()) {
+                        Text(
+                            text = keyPasteNotice.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    when (googleKeyCheckState) {
+                        is GoogleKeyCheckState.Connected -> {
+                            Text(
+                                text = "✓ ${(googleKeyCheckState as GoogleKeyCheckState.Connected).message}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        is GoogleKeyCheckState.Failed -> {
+                            Text(
+                                text = (googleKeyCheckState as GoogleKeyCheckState.Failed).message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                        else -> Unit
                     }
                 }
             }
@@ -601,7 +815,7 @@ fun SettingsAndPlanScreen(
                         Icon(Icons.Default.CloudDownload, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = if (language == SathiLanguage.BN) "অফলাইন মোড (Offline Pack)" else "Offline Mode Pack",
+                            text = if (language == SathiLanguage.BN) "স্মার্ট জ্ঞান ভান্ডার ও অফলাইন প্যাক (সর্বোচ্চ ২ জিবি)" else "Smart Knowledge Brain (Up to 2 GB)",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
@@ -609,12 +823,18 @@ fun SettingsAndPlanScreen(
 
                     Text(
                         text = if (language == SathiLanguage.BN) {
-                            "বাংলাদেশের ৬৪ জেলা ও সাধারণ জ্ঞান প্যাক ডাউনলোড করে ইন্টারনেট ছাড়াও সাথীকে ব্যবহার করুন। ওয়াই-ফাই ডিফল্ট চালু আছে।"
+                            "Google চাবি সেট করলেই সাথী প্রয়োজনমতো Google ও এনসাইক্লোপিডিয়া থেকে তথ্য নিয়ে সর্বোচ্চ ২ জিবি পর্যন্ত নিজের মেধা সংরক্ষণ করে যাতে নেট ছাড়াও কথা ও উত্তর দিতে পারে।"
                         } else {
-                            "Downloads real Bengali & Bangladesh encyclopedia topics to your phone for offline Q&A. Wi-Fi Only is enabled by default."
+                            "Automatically collects and stores structured encyclopedic & Gemini-distilled knowledge on-device up to a strict 2 GB budget for rich offline voice answers."
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = viewModel.getOfflineBrainBudgetSummary(language),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold
                     )
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -802,8 +1022,22 @@ fun SettingsAndPlanScreen(
                         Icon(Icons.Default.VolumeUp, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            if (language == SathiLanguage.BN) "ফোনে বাংলা অফলাইন ভয়েস ইনস্টল/চেক করুন"
-                            else "Install/Check Phone Bengali Voice Data"
+                            if (language == SathiLanguage.BN) "অফলাইন বাংলা কণ্ঠ (TTS Voice Data) ইনস্টল করুন"
+                            else "Install Offline Bengali TTS Voice"
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = { viewModel.openOfflineSpeechRecognitionSettings() },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("offline_speech_settings_button")
+                    ) {
+                        Icon(Icons.Default.Mic, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            if (language == SathiLanguage.BN) "অফলাইন ভয়েস রেকগনিশন (Speech Pack) ডাউনলোড করুন"
+                            else "Download Offline Voice Recognition Pack"
                         )
                     }
                 }

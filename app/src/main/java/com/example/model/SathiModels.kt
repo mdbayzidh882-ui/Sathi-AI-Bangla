@@ -200,7 +200,7 @@ data class AppConfig(
     val dayPlanningForFree: Boolean = false,
     val announcementText: String = "",
     val announcementActive: Boolean = false,
-    val bannerAdEnabled: Boolean = true,
+    val bannerAdEnabled: Boolean = false,
     val bannerAdUnitId: String = "ca-app-pub-3940256099942544/6300978111",
     val bannerAdUrl: String = DEFAULT_BANNER_AD_URL,
     val updatedBy: String = "",

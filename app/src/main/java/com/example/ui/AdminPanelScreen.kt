@@ -70,13 +70,18 @@ import java.security.MessageDigest
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.VisualTransformation
+import com.example.data.SathiAiService
 
 private enum class AdminTab(val label: String) {
     LIVE("Live Monitor"),
@@ -201,8 +206,7 @@ fun AdminPanelScreen(
                         floatingRunning = floatingRunning,
                         screenSharing = screenSharing,
                         screenReaderActive = screenReaderActive,
-                        wakeRunning = wakeRunning,
-                        bannerAdEnabled = globalConfig.bannerAdEnabled
+                        wakeRunning = wakeRunning
                     )
 
                     AdminTab.GOOGLE_KEY -> AdminGoogleKeyTab(
@@ -528,10 +532,6 @@ private fun AdminFeaturesTab(
     var dayPlanFree by remember(config) { mutableStateOf(config.dayPlanningForFree) }
     var announcementActive by remember(config) { mutableStateOf(config.announcementActive) }
     var announcementText by remember(config) { mutableStateOf(config.announcementText) }
-    var bannerAdEnabled by remember(config) { mutableStateOf(config.bannerAdEnabled) }
-    var bannerAdUrl by remember(config) { mutableStateOf(config.bannerAdUrl) }
-    var bannerAdUnitId by remember(config) { mutableStateOf(config.bannerAdUnitId) }
-    val isUrlValid = bannerAdUrl.isBlank() || sanitizeBannerHttpsUrl(bannerAdUrl) != null
 
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
@@ -551,36 +551,6 @@ private fun AdminFeaturesTab(
         item {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Bottom Banner Ad (নিচে ছোট ব্যানার অ্যাড)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    FeatureToggleRow("Show Bottom Banner Ad", bannerAdEnabled) { bannerAdEnabled = it }
-                    OutlinedTextField(
-                        value = bannerAdUrl,
-                        onValueChange = { bannerAdUrl = it },
-                        label = { Text("Banner Ad WebView URL (HTTPS)") },
-                        placeholder = { Text(com.example.model.AppConfig.DEFAULT_BANNER_AD_URL) },
-                        isError = !isUrlValid,
-                        supportingText = if (!isUrlValid) {
-                            { Text("Only valid public https:// URLs are allowed.") }
-                        } else null,
-                        singleLine = true,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("banner_ad_url_input")
-                    )
-                    OutlinedTextField(
-                        value = bannerAdUnitId,
-                        onValueChange = { bannerAdUnitId = it },
-                        label = { Text("Fallback AdMob Banner Unit ID") },
-                        placeholder = { Text("ca-app-pub-3940256099942544/6300978111") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            }
-        }
-        item {
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("Global Announcement", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     FeatureToggleRow("Show Announcement on Home", announcementActive) { announcementActive = it }
                     OutlinedTextField(
@@ -591,7 +561,6 @@ private fun AdminFeaturesTab(
                         modifier = Modifier.fillMaxWidth()
                     )
                     Button(
-                        enabled = isUrlValid,
                         onClick = {
                             onSave(
                                 config.copy(
@@ -601,15 +570,13 @@ private fun AdminFeaturesTab(
                                     dayPlanningForFree = dayPlanFree,
                                     announcementActive = announcementActive,
                                     announcementText = announcementText,
-                                    bannerAdEnabled = bannerAdEnabled,
-                                    bannerAdUrl = sanitizeBannerHttpsUrl(bannerAdUrl) ?: "",
-                                    bannerAdUnitId = bannerAdUnitId.trim()
+                                    bannerAdEnabled = false
                                 )
                             )
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Save Features, Ads & Announcement")
+                        Text("Save Features & Announcement")
                     }
                 }
             }
@@ -625,8 +592,7 @@ private fun AdminLiveMonitorTab(
     floatingRunning: Boolean,
     screenSharing: Boolean,
     screenReaderActive: Boolean,
-    wakeRunning: Boolean,
-    bannerAdEnabled: Boolean
+    wakeRunning: Boolean
 ) {
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
@@ -647,7 +613,7 @@ private fun AdminLiveMonitorTab(
                         color = MaterialTheme.colorScheme.onPrimaryContainer
                     )
                     Text(
-                        text = "ভাসমান বাবল: ${if (floatingRunning) "চালু ✓" else "বন্ধ"} • স্ক্রিন শেয়ার: ${if (screenSharing) "চালু ✓" else "বন্ধ"} • স্ক্রিন রিডার: ${if (screenReaderActive) "চালু ✓" else "বন্ধ"} • ওয়েক-ওয়ার্ড: ${if (wakeRunning) "চালু ✓" else "বন্ধ"} • ব্যানার অ্যাড: ${if (bannerAdEnabled) "চালু ✓" else "বন্ধ"}",
+                        text = "ভাসমান বাবল: ${if (floatingRunning) "চালু ✓" else "বন্ধ"} • স্ক্রিন শেয়ার: ${if (screenSharing) "চালু ✓" else "বন্ধ"} • স্ক্রিন রিডার: ${if (screenReaderActive) "চালু ✓" else "বন্ধ"} • ওয়েক-ওয়ার্ড: ${if (wakeRunning) "চালু ✓" else "বন্ধ"}",
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onPrimaryContainer
                     )
@@ -738,9 +704,16 @@ private fun AdminGoogleKeyTab(
     onClear: () -> Unit
 ) {
     val context = LocalContext.current
-    var keyInput by remember(savedKey) { mutableStateOf(savedKey) }
-    var showKey by remember { mutableStateOf(false) }
+    val composeClipboard = LocalClipboardManager.current
+    var keyInput by remember { mutableStateOf(savedKey) }
+    var showKey by remember { mutableStateOf(true) }
     var pasteFeedback by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(savedKey) {
+        if (savedKey.isNotBlank() && keyInput.isBlank()) {
+            keyInput = savedKey
+        }
+    }
 
     val isConnected = savedKey.isNotBlank() && checkState !is GoogleKeyCheckState.Failed
 
@@ -778,7 +751,7 @@ private fun AdminGoogleKeyTab(
                     }
                     Text(
                         text = if (savedKey.isNotBlank()) {
-                            "সংরক্ষিত চাবি: ${maskApiKeyPreview(savedKey)} — এখন সাথী সরাসরি Google Search দিয়ে উত্তর খুঁজতে পারবে।"
+                            "সংরক্ষিত চাবি: ${maskApiKeyPreview(savedKey)} — এখন সাথী সরাসরি Google Search দিয়ে উত্তর খুঁজতে পারবে এবং ছবিও বানাতে পারবে।"
                         } else {
                             "নিচে আপনার Google AI Studio-এর চাবি (API Key) কপি করে পেস্ট করুন। এতে কোনো Firebase সেটআপ ছাড়াই সাথী সরাসরি Google থেকে সার্চ করবে।"
                         },
@@ -799,13 +772,17 @@ private fun AdminGoogleKeyTab(
 
                     OutlinedTextField(
                         value = keyInput,
-                        onValueChange = {
-                            keyInput = it
+                        onValueChange = { raw ->
+                            keyInput = SathiAiService.sanitizeApiKeyInput(raw)
                             pasteFeedback = null
                         },
                         label = { Text("Google API Key (AIza...)") },
                         placeholder = { Text("এখানে চাবি পেস্ট করুন") },
                         singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Ascii,
+                            autoCorrectEnabled = false
+                        ),
                         visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
                         trailingIcon = {
                             IconButton(onClick = { showKey = !showKey }) {
@@ -826,13 +803,18 @@ private fun AdminGoogleKeyTab(
                     ) {
                         OutlinedButton(
                             onClick = {
-                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                                val clipText = cm?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()?.trim().orEmpty()
-                                if (clipText.isBlank()) {
+                                val fromCompose = composeClipboard.getText()?.text.orEmpty()
+                                val fromSystem = runCatching {
+                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                    cm?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
+                                }.getOrDefault("")
+                                val rawClip = fromCompose.ifBlank { fromSystem }
+                                val cleaned = SathiAiService.sanitizeApiKeyInput(rawClip)
+                                if (cleaned.isBlank()) {
                                     pasteFeedback = "ক্লিপবোর্ডে কোনো লেখা কপি করা নেই।"
                                 } else {
-                                    keyInput = clipText
-                                    pasteFeedback = "ক্লিপবোর্ড থেকে চাবি পেস্ট করা হয়েছে!"
+                                    keyInput = cleaned
+                                    pasteFeedback = "চাবি পেস্ট হয়েছে (${maskApiKeyPreview(cleaned)}) — এখন 'সংরক্ষণ ও চালু করুন' চাপুন!"
                                 }
                             },
                             modifier = Modifier
@@ -847,8 +829,10 @@ private fun AdminGoogleKeyTab(
                         Button(
                             enabled = checkState !is GoogleKeyCheckState.Verifying,
                             onClick = {
+                                val cleaned = SathiAiService.sanitizeApiKeyInput(keyInput)
+                                keyInput = cleaned
                                 pasteFeedback = null
-                                onSaveAndVerify(keyInput)
+                                onSaveAndVerify(cleaned)
                             },
                             modifier = Modifier
                                 .weight(1.4f)

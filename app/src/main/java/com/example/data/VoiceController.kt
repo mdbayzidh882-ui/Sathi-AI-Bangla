@@ -1,10 +1,20 @@
 package com.example.data
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.NoiseSuppressor
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -12,11 +22,14 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
 import android.util.Log
+import androidx.core.content.ContextCompat
 import com.example.model.SathiLanguage
 import com.example.model.SathiMood
 import com.example.model.SathiVoiceProfile
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.sqrt
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -46,9 +59,16 @@ class VoiceController(
     private var speechRecognizer: SpeechRecognizer? = null
     private var activeLanguage: SathiLanguage = SathiLanguage.BN
     private var preferOfflineRecognition: Boolean = false
+    private var retriedOfflineAfterNetError: Boolean = false
     private var liveAutoListenAfterTts: Boolean = false
     private var consecutiveLiveSilenceCount: Int = 0
+    private var busyRetryCount: Int = 0
     private var lastPartialTranscript: String = ""
+
+    // Real-time barge-in voice activity monitor while TTS speaks
+    private val bargeInMonitorRunning = AtomicBoolean(false)
+    @Volatile
+    private var bargeInThread: Thread? = null
 
     init {
         initTts()
@@ -60,28 +80,30 @@ class VoiceController(
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {
                         _state.value = _state.value.copy(speaking = true)
+                        if (_state.value.liveSessionActive && _state.value.autoVoiceEnabled && !_state.value.muted) {
+                            startBargeInMonitor()
+                        }
                     }
 
                     override fun onDone(utteranceId: String?) {
+                        stopBargeInMonitor()
                         _state.value = _state.value.copy(speaking = false)
                         consecutiveLiveSilenceCount = 0
-                        if (_state.value.liveSessionActive && _state.value.autoVoiceEnabled && liveAutoListenAfterTts && !_state.value.muted) {
-                            liveAutoListenAfterTts = false
-                            mainHandler.postDelayed({
-                                if (_state.value.liveSessionActive && _state.value.autoVoiceEnabled && !_state.value.muted && !_state.value.listening && !_state.value.speaking) {
-                                    startListeningInternal(activeLanguage, preferOfflineRecognition)
-                                }
-                            }, 350L)
-                        }
+                        busyRetryCount = 0
+                        scheduleAutoResumeAfterSpeech()
                     }
 
                     @Deprecated("Deprecated in Java")
                     override fun onError(utteranceId: String?) {
+                        stopBargeInMonitor()
                         _state.value = _state.value.copy(speaking = false)
+                        scheduleAutoResumeAfterSpeech()
                     }
 
                     override fun onError(utteranceId: String?, errorCode: Int) {
+                        stopBargeInMonitor()
                         _state.value = _state.value.copy(speaking = false)
+                        scheduleAutoResumeAfterSpeech()
                     }
                 })
                 _state.value = _state.value.copy(ttsReady = true)
@@ -91,42 +113,65 @@ class VoiceController(
         }
     }
 
+    private fun scheduleAutoResumeAfterSpeech() {
+        if (_state.value.liveSessionActive && _state.value.autoVoiceEnabled && liveAutoListenAfterTts && !_state.value.muted) {
+            liveAutoListenAfterTts = false
+            mainHandler.postDelayed({
+                if (_state.value.liveSessionActive &&
+                    _state.value.autoVoiceEnabled &&
+                    !_state.value.muted &&
+                    !_state.value.listening &&
+                    !_state.value.speaking
+                ) {
+                    startListeningInternal(activeLanguage, preferOfflineRecognition || !isNetworkConnected())
+                }
+            }, 320L)
+        }
+    }
+
     fun setAutoVoiceEnabled(enabled: Boolean) {
         _state.value = _state.value.copy(autoVoiceEnabled = enabled)
         if (!enabled) {
             liveAutoListenAfterTts = false
+            stopBargeInMonitor()
             _state.value = _state.value.copy(liveSessionActive = false)
         }
     }
 
     fun startListeningAfterWake(language: SathiLanguage, preferOffline: Boolean = false) {
         activeLanguage = language
-        preferOfflineRecognition = preferOffline
+        preferOfflineRecognition = preferOffline || !isNetworkConnected()
         consecutiveLiveSilenceCount = 0
+        busyRetryCount = 0
+        retriedOfflineAfterNetError = false
         _state.value = _state.value.copy(
             liveSessionActive = _state.value.autoVoiceEnabled,
             muted = false,
             speechErrorMessage = null
         )
-        startListeningInternal(language, preferOffline)
+        startListeningInternal(language, preferOfflineRecognition)
     }
 
     fun startLiveSession(language: SathiLanguage, preferOffline: Boolean = false) {
         activeLanguage = language
-        preferOfflineRecognition = preferOffline
+        preferOfflineRecognition = preferOffline || !isNetworkConnected()
         consecutiveLiveSilenceCount = 0
+        busyRetryCount = 0
+        retriedOfflineAfterNetError = false
         _state.value = _state.value.copy(
             liveSessionActive = _state.value.autoVoiceEnabled,
             muted = false,
             speechErrorMessage = null
         )
-        startListeningInternal(language, preferOffline)
+        startListeningInternal(language, preferOfflineRecognition)
     }
 
     fun stopLiveSession() {
         liveAutoListenAfterTts = false
         consecutiveLiveSilenceCount = 0
+        busyRetryCount = 0
         lastPartialTranscript = ""
+        stopBargeInMonitor()
         _state.value = _state.value.copy(liveSessionActive = false, muted = false)
         stopListening()
         stopSpeaking()
@@ -140,32 +185,38 @@ class VoiceController(
         _state.value = _state.value.copy(muted = muted)
         if (muted) {
             liveAutoListenAfterTts = false
+            stopBargeInMonitor()
             stopListening()
         } else if (_state.value.liveSessionActive && _state.value.autoVoiceEnabled && !_state.value.speaking && !_state.value.listening) {
-            startListeningInternal(activeLanguage, preferOfflineRecognition)
+            startListeningInternal(activeLanguage, preferOfflineRecognition || !isNetworkConnected())
         }
     }
 
     fun setLiveSessionEnabled(enabled: Boolean) {
         if (!enabled) {
             liveAutoListenAfterTts = false
+            stopBargeInMonitor()
         }
         _state.value = _state.value.copy(liveSessionActive = enabled)
     }
 
     fun startListening(language: SathiLanguage, preferOffline: Boolean = false) {
         activeLanguage = language
-        preferOfflineRecognition = preferOffline
+        preferOfflineRecognition = preferOffline || !isNetworkConnected()
         consecutiveLiveSilenceCount = 0
-        startListeningInternal(language, preferOffline)
+        busyRetryCount = 0
+        retriedOfflineAfterNetError = false
+        startListeningInternal(language, preferOfflineRecognition)
     }
 
     private fun startListeningInternal(language: SathiLanguage, preferOffline: Boolean) {
         activeLanguage = language
-        preferOfflineRecognition = preferOffline
+        val useOffline = preferOffline || !isNetworkConnected()
+        preferOfflineRecognition = useOffline
         mainHandler.post {
             liveAutoListenAfterTts = false
             lastPartialTranscript = ""
+            stopBargeInMonitor()
             stopSpeakingInternal()
             _state.value = _state.value.copy(speechErrorMessage = null, partialTranscript = "")
 
@@ -183,14 +234,19 @@ class VoiceController(
             }
 
             try {
+                speechRecognizer?.cancel()
                 speechRecognizer?.destroy()
                 speechRecognizer = SpeechRecognizer.createSpeechRecognizer(appContext).apply {
                     setRecognitionListener(object : RecognitionListener {
                         override fun onReadyForSpeech(params: Bundle?) {
+                            busyRetryCount = 0
                             _state.value = _state.value.copy(listening = true, speechErrorMessage = null)
                         }
 
-                        override fun onBeginningOfSpeech() {}
+                        override fun onBeginningOfSpeech() {
+                            consecutiveLiveSilenceCount = 0
+                        }
+
                         override fun onRmsChanged(rmsdB: Float) {}
                         override fun onBufferReceived(buffer: ByteArray?) {}
 
@@ -206,19 +262,56 @@ class VoiceController(
 
                             if (isTimeoutOrNoMatch && rescued.length >= 2) {
                                 consecutiveLiveSilenceCount = 0
+                                busyRetryCount = 0
                                 _state.value = _state.value.copy(listening = false, partialTranscript = rescued)
                                 onFinalTranscript(rescued)
                                 return
                             }
 
-                            if (_state.value.liveSessionActive && !_state.value.muted && isTimeoutOrNoMatch && consecutiveLiveSilenceCount < 8) {
-                                consecutiveLiveSilenceCount++
+                            // Automatic fallback retry with EXTRA_PREFER_OFFLINE when network speech fails
+                            val isNetworkErr = error == SpeechRecognizer.ERROR_NETWORK ||
+                                error == SpeechRecognizer.ERROR_NETWORK_TIMEOUT
+                            if (isNetworkErr && !retriedOfflineAfterNetError) {
+                                retriedOfflineAfterNetError = true
+                                mainHandler.postDelayed({
+                                    if (!_state.value.muted && !_state.value.speaking) {
+                                        startListeningInternal(activeLanguage, true)
+                                    }
+                                }, 180L)
+                                return
+                            }
+
+                            // Recover seamlessly if recognizer was temporarily busy
+                            if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY && busyRetryCount < 3) {
+                                busyRetryCount++
                                 _state.value = _state.value.copy(listening = false, speechErrorMessage = null)
                                 mainHandler.postDelayed({
                                     if (_state.value.liveSessionActive && !_state.value.muted && !_state.value.speaking) {
-                                        startListeningInternal(activeLanguage, preferOfflineRecognition)
+                                        startListeningInternal(activeLanguage, preferOfflineRecognition || !isNetworkConnected())
                                     }
-                                }, 320L)
+                                }, 420L)
+                                return
+                            }
+
+                            // Keep hands-free live session alive during silence/pauses without forcing user to tap screen
+                            if (_state.value.liveSessionActive &&
+                                _state.value.autoVoiceEnabled &&
+                                !_state.value.muted &&
+                                (isTimeoutOrNoMatch || error == SpeechRecognizer.ERROR_CLIENT)
+                            ) {
+                                consecutiveLiveSilenceCount++
+                                _state.value = _state.value.copy(listening = false, speechErrorMessage = null)
+                                val delayMs = if (consecutiveLiveSilenceCount < 10) 280L else 650L
+                                mainHandler.postDelayed({
+                                    if (_state.value.liveSessionActive &&
+                                        _state.value.autoVoiceEnabled &&
+                                        !_state.value.muted &&
+                                        !_state.value.speaking &&
+                                        !_state.value.listening
+                                    ) {
+                                        startListeningInternal(activeLanguage, preferOfflineRecognition || !isNetworkConnected())
+                                    }
+                                }, delayMs)
                                 return
                             }
 
@@ -237,6 +330,8 @@ class VoiceController(
 
                         override fun onResults(results: Bundle?) {
                             consecutiveLiveSilenceCount = 0
+                            busyRetryCount = 0
+                            retriedOfflineAfterNetError = false
                             lastPartialTranscript = ""
                             val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                             val spoken = matches?.firstOrNull()?.trim().orEmpty()
@@ -246,12 +341,12 @@ class VoiceController(
                             )
                             if (spoken.isNotEmpty()) {
                                 onFinalTranscript(spoken)
-                            } else if (_state.value.liveSessionActive && !_state.value.muted) {
+                            } else if (_state.value.liveSessionActive && _state.value.autoVoiceEnabled && !_state.value.muted) {
                                 mainHandler.postDelayed({
                                     if (_state.value.liveSessionActive && !_state.value.muted && !_state.value.speaking) {
-                                        startListeningInternal(activeLanguage, preferOfflineRecognition)
+                                        startListeningInternal(activeLanguage, preferOfflineRecognition || !isNetworkConnected())
                                     }
-                                }, 320L)
+                                }, 280L)
                             }
                         }
 
@@ -278,10 +373,10 @@ class VoiceController(
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, localeTag)
                     putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                     putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1100L)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 400L)
-                    if (preferOffline) {
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1600L)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1150L)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 350L)
+                    if (useOffline) {
                         putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
                     }
                 }
@@ -302,6 +397,128 @@ class VoiceController(
         }
     }
 
+    /**
+     * Monitors microphone input via AcousticEchoCanceler while Sathi is speaking.
+     * As soon as sustained user speech is detected above the calibrated echo/noise baseline,
+     * TTS pauses immediately and SpeechRecognizer starts listening automatically.
+     */
+    private fun startBargeInMonitor() {
+        if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+        if (!bargeInMonitorRunning.compareAndSet(false, true)) return
+
+        val thread = Thread {
+            var recorder: AudioRecord? = null
+            var aec: AcousticEchoCanceler? = null
+            var ns: NoiseSuppressor? = null
+            try {
+                val sampleRate = 16000
+                val minBuf = AudioRecord.getMinBufferSize(
+                    sampleRate,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT
+                )
+                if (minBuf <= 0) return@Thread
+
+                val frameSize = 1280 // 80ms @ 16kHz mono
+                val bufferSize = maxOf(minBuf * 2, frameSize * 4)
+                recorder = AudioRecord(
+                    MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                    sampleRate,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    bufferSize
+                )
+                if (recorder.state != AudioRecord.STATE_INITIALIZED) return@Thread
+
+                if (AcousticEchoCanceler.isAvailable()) {
+                    aec = runCatching {
+                        AcousticEchoCanceler.create(recorder.audioSessionId)?.apply { enabled = true }
+                    }.getOrNull()
+                }
+                if (NoiseSuppressor.isAvailable()) {
+                    ns = runCatching {
+                        NoiseSuppressor.create(recorder.audioSessionId)?.apply { enabled = true }
+                    }.getOrNull()
+                }
+
+                recorder.startRecording()
+                val pcm = ShortArray(frameSize)
+                val startMs = System.currentTimeMillis()
+                var baselineRms = 1200.0
+                val calibrationSamples = mutableListOf<Double>()
+                val recentWindows = ArrayDeque<Double>()
+
+                while (bargeInMonitorRunning.get() &&
+                    _state.value.speaking &&
+                    _state.value.liveSessionActive &&
+                    _state.value.autoVoiceEnabled &&
+                    !_state.value.muted
+                ) {
+                    val read = recorder.read(pcm, 0, pcm.size)
+                    if (read <= 0) {
+                        Thread.sleep(40L)
+                        continue
+                    }
+
+                    var sumSq = 0.0
+                    for (i in 0 until read) {
+                        val s = pcm[i].toDouble()
+                        sumSq += s * s
+                    }
+                    val rms = sqrt(sumSq / read)
+                    val elapsed = System.currentTimeMillis() - startMs
+
+                    // Initial 550ms TTS ramp-up calibration window
+                    if (elapsed < 550L) {
+                        calibrationSamples.add(rms)
+                        if (calibrationSamples.isNotEmpty()) {
+                            baselineRms = (calibrationSamples.average() * 1.15).coerceIn(700.0, 5200.0)
+                        }
+                        continue
+                    }
+
+                    if (recentWindows.size >= 3) {
+                        recentWindows.removeFirst()
+                    }
+                    recentWindows.addLast(rms)
+
+                    if (shouldTriggerVoiceBargeIn(recentWindows.toList(), baselineRms)) {
+                        bargeInMonitorRunning.set(false)
+                        mainHandler.post {
+                            if (_state.value.liveSessionActive && _state.value.autoVoiceEnabled && !_state.value.muted) {
+                                interruptAndListen(activeLanguage, preferOfflineRecognition || !isNetworkConnected())
+                            }
+                        }
+                        break
+                    } else if (rms < baselineRms * 1.35) {
+                        // Slowly track gentle changes in background echo level
+                        baselineRms = (baselineRms * 0.90 + rms * 0.10).coerceIn(700.0, 5200.0)
+                    }
+                }
+            } catch (_: Throwable) {
+                // Non-fatal on emulators/environments without physical mic HAL
+            } finally {
+                bargeInMonitorRunning.set(false)
+                runCatching { aec?.release() }
+                runCatching { ns?.release() }
+                runCatching { recorder?.stop() }
+                runCatching { recorder?.release() }
+            }
+        }.apply {
+            name = "SathiBargeInMonitor"
+            isDaemon = true
+        }
+        bargeInThread = thread
+        thread.start()
+    }
+
+    private fun stopBargeInMonitor() {
+        bargeInMonitorRunning.set(false)
+        bargeInThread = null
+    }
+
     fun stopListening() {
         mainHandler.post {
             try {
@@ -313,7 +530,15 @@ class VoiceController(
     }
 
     fun interruptAndListen(language: SathiLanguage, preferOffline: Boolean = false) {
+        stopBargeInMonitor()
         stopSpeaking()
+        consecutiveLiveSilenceCount = 0
+        busyRetryCount = 0
+        _state.value = _state.value.copy(
+            liveSessionActive = _state.value.autoVoiceEnabled,
+            muted = false,
+            speechErrorMessage = null
+        )
         startListening(language, preferOffline)
     }
 
@@ -326,7 +551,17 @@ class VoiceController(
     ) {
         val cleanText = text.trim()
         if (cleanText.isEmpty()) return
-        val engine = tts ?: return
+        val engine = tts
+        if (engine == null || !_state.value.ttsReady) {
+            if (autoResumeLiveAfter && _state.value.liveSessionActive && _state.value.autoVoiceEnabled && !_state.value.muted) {
+                mainHandler.postDelayed({
+                    if (_state.value.liveSessionActive && !_state.value.muted && !_state.value.listening && !_state.value.speaking) {
+                        startListeningInternal(language, preferOfflineRecognition || !isNetworkConnected())
+                    }
+                }, 350L)
+            }
+            return
+        }
 
         mainHandler.post {
             try {
@@ -346,24 +581,25 @@ class VoiceController(
                     engine.setLanguage(Locale("bn", "IN"))
                 }
 
-                val matchedDistinctVoice = selectSyntheticVoice(engine, targetLocale, voiceProfile)
+                val offlineOnly = preferOfflineRecognition || !isNetworkConnected()
+                val matchedDistinctVoice = selectSyntheticVoice(engine, targetLocale, voiceProfile, offlineOnly)
 
                 val basePitch = if (voiceProfile == SathiVoiceProfile.FEMALE) {
-                    if (matchedDistinctVoice) 1.14f else 1.28f
+                    if (matchedDistinctVoice) 1.24f else 1.34f
                 } else {
-                    if (matchedDistinctVoice) 0.85f else 0.78f
+                    if (matchedDistinctVoice) 0.82f else 0.76f
                 }
                 val moodPitchDelta = when (mood) {
-                    SathiMood.HAPPY, SathiMood.PLAYFUL -> 0.05f
-                    SathiMood.COMFORTING -> -0.04f
-                    SathiMood.SERIOUS -> -0.02f
-                    SathiMood.WARM -> 0.0f
+                    SathiMood.HAPPY, SathiMood.PLAYFUL -> 0.04f
+                    SathiMood.COMFORTING -> -0.03f
+                    SathiMood.SERIOUS -> -0.01f
+                    SathiMood.WARM -> 0.01f
                 }
                 val moodRate = when (mood) {
-                    SathiMood.HAPPY, SathiMood.PLAYFUL -> 1.03f
-                    SathiMood.COMFORTING -> 0.90f
+                    SathiMood.HAPPY, SathiMood.PLAYFUL -> 1.01f
+                    SathiMood.COMFORTING -> 0.92f
                     SathiMood.SERIOUS -> 0.96f
-                    SathiMood.WARM -> 0.99f
+                    SathiMood.WARM -> 0.98f
                 }
 
                 engine.setPitch((basePitch + moodPitchDelta).coerceIn(0.68f, 1.48f))
@@ -371,21 +607,27 @@ class VoiceController(
 
                 val utteranceId = UUID.randomUUID().toString()
                 _state.value = _state.value.copy(speaking = true)
-                engine.speak(cleanText, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+                val res = engine.speak(cleanText, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+                if (res != TextToSpeech.SUCCESS) {
+                    _state.value = _state.value.copy(speaking = false)
+                    scheduleAutoResumeAfterSpeech()
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "TTS speak failed", e)
-                liveAutoListenAfterTts = false
                 _state.value = _state.value.copy(speaking = false)
+                scheduleAutoResumeAfterSpeech()
             }
         }
     }
 
     fun stopSpeaking() {
         liveAutoListenAfterTts = false
+        stopBargeInMonitor()
         mainHandler.post { stopSpeakingInternal() }
     }
 
     private fun stopSpeakingInternal() {
+        stopBargeInMonitor()
         try {
             tts?.stop()
         } catch (_: Exception) {
@@ -408,8 +650,25 @@ class VoiceController(
         }
     }
 
+    fun openOfflineSpeechRecognitionSettings() {
+        val candidates = listOf(
+            Intent(Settings.ACTION_VOICE_INPUT_SETTINGS),
+            Intent("com.google.android.googlequicksearchbox.action.PRIVACY_SETTINGS"),
+            Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA)
+        )
+        for (intent in candidates) {
+            try {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                appContext.startActivity(intent)
+                return
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     fun release() {
         liveAutoListenAfterTts = false
+        stopBargeInMonitor()
         mainHandler.post {
             try {
                 speechRecognizer?.destroy()
@@ -422,25 +681,42 @@ class VoiceController(
         }
     }
 
+    private fun isNetworkConnected(): Boolean {
+        return try {
+            val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                ?: return true
+            val net = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(net) ?: return false
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (_: Exception) {
+            true
+        }
+    }
+
     private fun selectSyntheticVoice(
         engine: TextToSpeech,
         locale: Locale,
-        profile: SathiVoiceProfile
+        profile: SathiVoiceProfile,
+        preferOffline: Boolean
     ): Boolean {
         return try {
             val voices = engine.voices ?: return false
-            val matchingLocale = voices
+            val allLocaleVoices = voices
                 .filter { v -> v.locale.language.equals(locale.language, ignoreCase = true) }
                 .sortedBy { it.name }
-            if (matchingLocale.isEmpty()) return false
+            if (allLocaleVoices.isEmpty()) return false
+
+            val offlineVoices = allLocaleVoices.filter { !it.isNetworkConnectionRequired }
+            val matchingLocale = if (preferOffline && offlineVoices.isNotEmpty()) offlineVoices else allLocaleVoices
 
             val femaleTokens = listOf(
-                "female", "woman", "ban", "bnf", "bin", "kalpana", "tanisha",
-                "-a-", "-c-", "-e-", "-g-", "x-sfg", "wavenet-a", "wavenet-c", "standard-a", "standard-c"
+                "female", "woman", "ban", "bnf", "bnd", "bin", "sfg", "kalpana", "tanisha",
+                "kanta", "sabina", "f00", "-a-", "-c-", "-e-", "-g-", "x-sfg",
+                "wavenet-a", "wavenet-c", "standard-a", "standard-c"
             )
             val maleTokens = listOf(
-                "male", "man", "bfu", "bnm", "rishi", "bashkar", "pradeep",
-                "-b-", "-d-", "-f-", "wavenet-b", "wavenet-d", "standard-b", "standard-d"
+                "male", "man", "bfu", "bnm", "rishi", "bashkar", "pradeep", "tanmay",
+                "m00", "-b-", "-d-", "-f-", "wavenet-b", "wavenet-d", "standard-b", "standard-d"
             )
 
             val explicitFemale = matchingLocale.firstOrNull { v ->
@@ -453,7 +729,9 @@ class VoiceController(
             }
 
             val chosen: Voice? = if (profile == SathiVoiceProfile.FEMALE) {
-                explicitFemale ?: matchingLocale.firstOrNull { it != explicitMale }
+                explicitFemale
+                    ?: matchingLocale.firstOrNull { it != explicitMale && !it.isNetworkConnectionRequired }
+                    ?: matchingLocale.firstOrNull { it != explicitMale }
             } else {
                 explicitMale ?: matchingLocale.lastOrNull { it != explicitFemale }
             }
@@ -474,12 +752,12 @@ class VoiceController(
         return when (error) {
             SpeechRecognizer.ERROR_NO_MATCH,
             SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
-                if (language == SathiLanguage.BN) "কথা স্পষ্ট শোনা যায়নি, আবার বলুন বা মাইক্রোফোন চাপুন।"
+                if (language == SathiLanguage.BN) "কথা স্পষ্ট শোনা যায়নি, আবার বলুন বা গোল মাইক্রোফোন চাপুন।"
                 else "I didn't catch that clearly. Please speak again or tap the mic."
             SpeechRecognizer.ERROR_NETWORK,
             SpeechRecognizer.ERROR_NETWORK_TIMEOUT ->
-                if (language == SathiLanguage.BN) "ভয়েস চিনতে নেটওয়ার্ক সমস্যা হয়েছে, নিচে লিখে কথা বলতে পারেন।"
-                else "Network issue while listening. You can type your message below."
+                if (language == SathiLanguage.BN) "অফলাইনে কথা চিনতে সেটিংস থেকে বাংলা অফলাইন ভয়েস ইনস্টল করুন, অথবা নিচে লিখে বলুন।"
+                else "Offline speech data is not installed yet on this device. Install it in Settings or type below."
             SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ->
                 if (language == SathiLanguage.BN) "কথা শোনার জন্য মাইক্রোফোন অনুমতি প্রয়োজন।"
                 else "Microphone permission is needed to listen."
@@ -492,5 +770,15 @@ class VoiceController(
 
     companion object {
         private const val TAG = "VoiceController"
+
+        /**
+         * Returns true only when 3 consecutive 80ms windows (~240ms) sustain RMS speech energy
+         * clearly above the calibrated echo/ambient baseline, rejecting brief clicks or TTS leakage.
+         */
+        fun shouldTriggerVoiceBargeIn(recentWindowRms: List<Double>, baselineRms: Double): Boolean {
+            if (recentWindowRms.size < 3) return false
+            val threshold = maxOf(2150.0, baselineRms * 2.35)
+            return recentWindowRms.takeLast(3).all { it >= threshold }
+        }
     }
 }

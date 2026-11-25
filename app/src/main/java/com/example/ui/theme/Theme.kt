@@ -1,5 +1,6 @@
 package com.example.ui.theme
 
+import android.app.Activity
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -7,45 +8,48 @@ import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
 
 private val SathiLightColorScheme = lightColorScheme(
-    primary = SathiLavender,
+    primary = SathiAmberPrimary,
     onPrimary = Color.White,
-    primaryContainer = SathiLavenderContainer,
-    onPrimaryContainer = SathiOnLavenderContainer,
-    secondary = SathiOrchid,
+    primaryContainer = SathiGoldenSoft,
+    onPrimaryContainer = SathiOnGoldenContainer,
+    secondary = SathiSunHoney,
     onSecondary = Color.White,
-    secondaryContainer = SathiOrchidContainer,
-    onSecondaryContainer = SathiOnOrchidContainer,
-    tertiary = SathiPeriwinkle,
+    secondaryContainer = SathiHoneyContainer,
+    onSecondaryContainer = SathiOnHoneyContainer,
+    tertiary = SathiTealAccent,
     onTertiary = Color.White,
-    tertiaryContainer = SathiPeriwinkleContainer,
-    onTertiaryContainer = SathiOnPeriwinkleContainer,
-    background = SathiMistBg,
-    onBackground = SathiPlumInk,
-    surface = Color(0xF5FFFFFF),
-    onSurface = SathiPlumInk,
-    surfaceVariant = Color(0xEBFFFFFF),
-    onSurfaceVariant = SathiMutedPlum,
-    outline = SathiMistOutline
+    tertiaryContainer = SathiTealContainer,
+    onTertiaryContainer = SathiOnTealContainer,
+    background = SathiDayBg,
+    onBackground = SathiDayInk,
+    surface = SathiDaySurface,
+    onSurface = SathiDayInk,
+    surfaceVariant = SathiDayCard,
+    onSurfaceVariant = SathiDayMuted,
+    outline = SathiDayOutline
 )
 
 private val SathiDarkColorScheme = darkColorScheme(
-    primary = SathiNightLavender,
-    onPrimary = SathiOnLavenderContainer,
-    primaryContainer = Color(0xFF3E2878),
-    onPrimaryContainer = SathiLavenderContainer,
-    secondary = SathiNightOrchid,
-    onSecondary = SathiOnOrchidContainer,
-    secondaryContainer = Color(0xFF4F246B),
-    onSecondaryContainer = SathiOrchidContainer,
-    tertiary = SathiNightPeriwinkle,
-    onTertiary = SathiOnPeriwinkleContainer,
-    tertiaryContainer = Color(0xFF28346B),
-    onTertiaryContainer = SathiPeriwinkleContainer,
+    primary = SathiNightGold,
+    onPrimary = Color(0xFF281C00),
+    primaryContainer = Color(0xFF4A3700),
+    onPrimaryContainer = SathiGoldenSoft,
+    secondary = SathiNightHoney,
+    onSecondary = Color(0xFF291B00),
+    secondaryContainer = Color(0xFF3E3008),
+    onSecondaryContainer = SathiHoneyContainer,
+    tertiary = SathiNightTeal,
+    onTertiary = Color(0xFF003731),
+    tertiaryContainer = Color(0xFF004F47),
+    onTertiaryContainer = SathiTealContainer,
     background = SathiNightBg,
     onBackground = SathiNightInk,
     surface = SathiNightSurface,
@@ -67,21 +71,17 @@ fun sathiHorizonBackgroundBrush(darkTheme: Boolean = isSystemInDarkTheme()): Bru
     return if (darkTheme) {
         Brush.verticalGradient(
             colorStops = arrayOf(
-                0.00f to SathiTopYellowDark,
-                0.24f to SathiUpperYellowPullDark,
-                0.48f to SathiMiddleBlendDark,
-                0.76f to SathiLowerBluePullDark,
-                1.00f to SathiBottomBlueDark
+                0.00f to SathiTopNightDark,
+                0.35f to SathiNightBg,
+                1.00f to SathiBottomNightDark
             )
         )
     } else {
         Brush.verticalGradient(
             colorStops = arrayOf(
                 0.00f to SathiTopYellowLight,
-                0.24f to SathiUpperYellowPullLight,
-                0.50f to SathiMiddleBlendLight,
-                0.76f to SathiLowerBluePullLight,
-                1.00f to SathiBottomBlueLight
+                0.14f to SathiWhitePureLight,
+                1.00f to SathiWhitePureLight
             )
         )
     }
@@ -93,6 +93,17 @@ fun SathiTheme(
     content: @Composable () -> Unit
 ) {
     val colorScheme = if (darkTheme) SathiDarkColorScheme else SathiLightColorScheme
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        SideEffect {
+            val activity = view.context as? Activity
+            activity?.window?.let { window ->
+                val controller = WindowCompat.getInsetsController(window, view)
+                controller.isAppearanceLightStatusBars = !darkTheme
+                controller.isAppearanceLightNavigationBars = !darkTheme
+            }
+        }
+    }
     MaterialTheme(
         colorScheme = colorScheme,
         typography = SathiTypography,

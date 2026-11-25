@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Settings
@@ -41,9 +42,9 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.example.core.NetworkMonitor
 import com.example.core.SathiPreferences
 import com.example.data.DeviceActionExecutor
+import com.example.data.GeminiRestImageGenRepository
 import com.example.data.OfflineCompanionEngine
 import com.example.data.OfflinePackManager
-import com.example.data.PlaceholderSathiImageGenRepository
 import com.example.data.SathiAiService
 import com.example.data.SathiDatabase
 import com.example.data.SathiLocalRepository
@@ -59,18 +60,23 @@ private enum class SathiDestination(
     val icon: ImageVector
 ) {
     VOICE("সাথী", "Sathi", Icons.Default.Mic),
+    LIVE("লাইভ", "Live", Icons.Default.GraphicEq),
     STUDIO("স্টুডিও", "Studio", Icons.Default.AutoAwesome),
     MEMORY("স্মৃতি", "Memory", Icons.Default.Psychology),
     SETTINGS("সেটিংস", "Settings", Icons.Default.Settings)
 }
 
 @Composable
-fun SathiAppNavigation(wakeTriggerTick: Int = 0) {
+fun SathiAppNavigation(
+    wakeTriggerTick: Int = 0,
+    isDarkTheme: Boolean = false
+) {
     SathiMainShell(
         currentUserId = SathiLocalRepository.LOCAL_OWNER_UID,
         userEmail = SathiLocalRepository.OWNER_EMAIL,
         displayName = SathiLocalRepository.OWNER_DEFAULT_NAME,
-        wakeTriggerTick = wakeTriggerTick
+        wakeTriggerTick = wakeTriggerTick,
+        isDarkTheme = isDarkTheme
     )
 }
 
@@ -79,7 +85,8 @@ private fun SathiMainShell(
     currentUserId: String,
     userEmail: String,
     displayName: String,
-    wakeTriggerTick: Int
+    wakeTriggerTick: Int,
+    isDarkTheme: Boolean
 ) {
     var lateViewModel by remember { mutableStateOf<SathiViewModel?>(null) }
 
@@ -99,7 +106,7 @@ private fun SathiMainShell(
                     userEmail = userEmail,
                     displayName = displayName,
                     repository = repo,
-                    aiService = SathiAiService(),
+                    aiService = SathiAiService(packManager),
                     webSearchService = WebSearchService(),
                     offlineEngine = OfflineCompanionEngine(packManager),
                     offlinePackManager = packManager,
@@ -107,7 +114,9 @@ private fun SathiMainShell(
                     deviceActions = DeviceActionExecutor(app),
                     preferences = SathiPreferences(app),
                     networkMonitor = NetworkMonitor(app),
-                    imageGenRepository = PlaceholderSathiImageGenRepository()
+                    imageGenRepository = GeminiRestImageGenRepository(
+                        apiKeyProvider = { lateViewModel?.localSettings?.value?.customGeminiApiKey.orEmpty() }
+                    )
                 )
             }
         }
@@ -149,7 +158,7 @@ private fun SathiMainShell(
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .background(sathiHorizonBackgroundBrush())
+            .background(sathiHorizonBackgroundBrush(darkTheme = isDarkTheme))
     ) {
         val isWide = maxWidth >= 600.dp
 
@@ -159,7 +168,7 @@ private fun SathiMainShell(
                     .fillMaxSize()
                     .statusBarsPadding()
             ) {
-                NavigationRail(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.26f)) {
+                NavigationRail(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)) {
                     SathiDestination.entries.forEach { dest ->
                         NavigationRailItem(
                             selected = selectedTab == dest,
@@ -177,9 +186,6 @@ private fun SathiMainShell(
                         onOpenAdmin = { showAdminPanel = true },
                         modifier = Modifier.weight(1f)
                     )
-                    if (globalConfig.bannerAdEnabled) {
-                        SathiAdBannerBar(config = globalConfig, language = language)
-                    }
                 }
             }
         } else {
@@ -187,22 +193,17 @@ private fun SathiMainShell(
                 containerColor = Color.Transparent,
                 contentWindowInsets = WindowInsets.navigationBars,
                 bottomBar = {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        if (globalConfig.bannerAdEnabled) {
-                            SathiAdBannerBar(config = globalConfig, language = language)
-                        }
-                        NavigationBar(
-                            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.28f),
-                            windowInsets = WindowInsets.navigationBars
-                        ) {
-                            SathiDestination.entries.forEach { dest ->
-                                NavigationBarItem(
-                                    selected = selectedTab == dest,
-                                    onClick = { selectedTab = dest },
-                                    icon = { Icon(dest.icon, contentDescription = dest.labelEn) },
-                                    label = { Text(if (language == SathiLanguage.BN) dest.labelBn else dest.labelEn) }
-                                )
-                            }
+                    NavigationBar(
+                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                        windowInsets = WindowInsets.navigationBars
+                    ) {
+                        SathiDestination.entries.forEach { dest ->
+                            NavigationBarItem(
+                                selected = selectedTab == dest,
+                                onClick = { selectedTab = dest },
+                                icon = { Icon(dest.icon, contentDescription = dest.labelEn) },
+                                label = { Text(if (language == SathiLanguage.BN) dest.labelBn else dest.labelEn) }
+                            )
                         }
                     }
                 }
@@ -232,6 +233,7 @@ private fun SathiTabContent(
 ) {
     when (selectedTab) {
         SathiDestination.VOICE -> HomeVoiceScreen(viewModel = viewModel, modifier = modifier)
+        SathiDestination.LIVE -> LiveVoiceChatScreen(viewModel = viewModel, modifier = modifier)
         SathiDestination.STUDIO -> StudioToolsScreen(
             viewModel = viewModel,
             onNavigateToUpgrade = onJumpToSettings,

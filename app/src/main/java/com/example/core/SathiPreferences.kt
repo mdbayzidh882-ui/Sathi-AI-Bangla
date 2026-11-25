@@ -22,16 +22,23 @@ enum class OfflinePackState {
     INSTALLED
 }
 
+enum class SathiThemeMode(val labelBn: String, val labelEn: String) {
+    DAY("দিন", "Day"),
+    NIGHT("রাত", "Night"),
+    SYSTEM("অটো", "Auto")
+}
+
 enum class OfflinePackTier(val sizeLabelBn: String, val sizeLabelEn: String, val sizeMb: Int) {
-    STANDARD("পূর্ণ জ্ঞান প্যাক (১৬টি বিষয়)", "Full Knowledge Pack (16 Topics)", 16),
-    LITE("হালকা প্যাক (৮টি বিষয় • পুরোনো ফোন)", "Lite Pack (8 Topics • Old Phones)", 8)
+    DEEP("স্মার্ট জ্ঞান ভান্ডার (সর্বোচ্চ ২ জিবি)", "Smart Knowledge Brain (Up to 2 GB)", 2048),
+    STANDARD("পূর্ণ জ্ঞান প্যাক (৬০+ বিষয়)", "Full Knowledge Pack (60+ Topics)", 24),
+    LITE("হালকা প্যাক (২০টি বিষয়)", "Lite Pack (20 Topics)", 8)
 }
 
 data class LocalSettingsState(
     val offlinePackState: OfflinePackState = OfflinePackState.NOT_INSTALLED,
-    val offlinePackTier: OfflinePackTier = OfflinePackTier.STANDARD,
+    val offlinePackTier: OfflinePackTier = OfflinePackTier.DEEP,
     val offlineDownloadProgress: Float = 0f,
-    val wifiOnlyDownload: Boolean = true,
+    val wifiOnlyDownload: Boolean = false,
     val offlineModeEnabled: Boolean = false,
     val failedCodeAttempts: Int = 0,
     val codeLockoutUntilMs: Long = 0L,
@@ -39,7 +46,9 @@ data class LocalSettingsState(
     val preferredVoiceFallback: String = "female",
     val customGeminiApiKey: String = "",
     val autoVoiceEnabled: Boolean = true,
-    val wakeWordEnabled: Boolean = false
+    val wakeWordEnabled: Boolean = false,
+    val themeMode: SathiThemeMode = SathiThemeMode.DAY,
+    val googleKeyVerified: Boolean = false
 )
 
 class SathiPreferences(private val context: Context) {
@@ -56,6 +65,8 @@ class SathiPreferences(private val context: Context) {
         val CUSTOM_GEMINI_API_KEY = stringPreferencesKey("custom_gemini_api_key")
         val AUTO_VOICE_ENABLED = booleanPreferencesKey("auto_voice_enabled")
         val WAKE_WORD_ENABLED = booleanPreferencesKey("wake_word_enabled")
+        val THEME_MODE = stringPreferencesKey("theme_mode")
+        val GOOGLE_KEY_VERIFIED = booleanPreferencesKey("google_key_verified")
     }
 
     val settingsFlow: Flow<LocalSettingsState> = context.sathiDataStore.data.map { prefs ->
@@ -65,9 +76,9 @@ class SathiPreferences(private val context: Context) {
             } ?: OfflinePackState.NOT_INSTALLED,
             offlinePackTier = enumValues<OfflinePackTier>().firstOrNull {
                 it.name == prefs[Keys.OFFLINE_PACK_TIER]
-            } ?: OfflinePackTier.STANDARD,
+            } ?: OfflinePackTier.DEEP,
             offlineDownloadProgress = prefs[Keys.OFFLINE_DOWNLOAD_PROGRESS] ?: 0f,
-            wifiOnlyDownload = prefs[Keys.WIFI_ONLY_DOWNLOAD] ?: true,
+            wifiOnlyDownload = prefs[Keys.WIFI_ONLY_DOWNLOAD] ?: false,
             offlineModeEnabled = prefs[Keys.OFFLINE_MODE_ENABLED] ?: false,
             failedCodeAttempts = prefs[Keys.FAILED_CODE_ATTEMPTS] ?: 0,
             codeLockoutUntilMs = prefs[Keys.CODE_LOCKOUT_UNTIL_MS] ?: 0L,
@@ -75,7 +86,11 @@ class SathiPreferences(private val context: Context) {
             preferredVoiceFallback = prefs[Keys.PREFERRED_VOICE] ?: "female",
             customGeminiApiKey = prefs[Keys.CUSTOM_GEMINI_API_KEY] ?: "",
             autoVoiceEnabled = prefs[Keys.AUTO_VOICE_ENABLED] ?: true,
-            wakeWordEnabled = prefs[Keys.WAKE_WORD_ENABLED] ?: false
+            wakeWordEnabled = prefs[Keys.WAKE_WORD_ENABLED] ?: false,
+            themeMode = enumValues<SathiThemeMode>().firstOrNull {
+                it.name == prefs[Keys.THEME_MODE]
+            } ?: SathiThemeMode.DAY,
+            googleKeyVerified = prefs[Keys.GOOGLE_KEY_VERIFIED] ?: false
         )
     }
 
@@ -135,9 +150,17 @@ class SathiPreferences(private val context: Context) {
         }
     }
 
-    suspend fun saveCustomGeminiApiKey(apiKey: String) {
+    suspend fun saveCustomGeminiApiKey(apiKey: String, verified: Boolean = false) {
         context.sathiDataStore.edit { prefs ->
-            prefs[Keys.CUSTOM_GEMINI_API_KEY] = apiKey.trim()
+            val cleaned = apiKey.trim()
+            prefs[Keys.CUSTOM_GEMINI_API_KEY] = cleaned
+            prefs[Keys.GOOGLE_KEY_VERIFIED] = cleaned.isNotBlank() && verified
+        }
+    }
+
+    suspend fun setThemeMode(mode: SathiThemeMode) {
+        context.sathiDataStore.edit { prefs ->
+            prefs[Keys.THEME_MODE] = mode.name
         }
     }
 

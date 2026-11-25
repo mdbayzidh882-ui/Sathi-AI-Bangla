@@ -39,24 +39,26 @@ class ExampleRobolectricTest {
     val composeTestRule = createAndroidComposeRule<MainActivity>()
 
     @Test
-    fun `app opens directly on home screen with Sathi title, drawer, new chat, mic, auto-voice toggle, emotion bar, banner ad, and media plus button`() {
+    fun `app opens directly on home screen with Sathi AI title, top quick questions, drawer, new chat, mic, auto-voice toggle, emotion bar, media plus button, and no ad section`() {
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithText("সাথী • Sathi").assertIsDisplayed()
+        composeTestRule.onNodeWithText("সাথী এআই • Sathi AI").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("top_quick_questions_row").assertIsDisplayed()
         composeTestRule.onNodeWithTag("drawer_menu_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("new_chat_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("theme_toggle_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("center_ai_logo").assertIsDisplayed()
         composeTestRule.onNodeWithTag("emotion_chip_sad").assertIsDisplayed()
         composeTestRule.onNodeWithTag("mic_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("auto_voice_toggle_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("attach_media_button").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("bottom_banner_ad").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("bottom_banner_ad").assertDoesNotExist()
     }
 
     @Test
-    fun `app name is Sathi`() {
+    fun `app name is Sathi AI`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val appName = context.getString(R.string.app_name)
-        assertEquals("Sathi", appName)
+        assertEquals("সাথী এআই", appName)
     }
 
     @Test
@@ -375,7 +377,7 @@ class ExampleRobolectricTest {
         val imgOutcome = imgRepo.generateImage(imgTurn.actionParam, SathiLanguage.BN).getOrThrow()
         assertTrue(imgOutcome.isPlaceholderPreview)
         assertTrue(imgOutcome.bitmap.width > 100)
-        assertTrue(imgOutcome.requiresFirebaseNotice.contains("Firebase"))
+        assertTrue(imgOutcome.requiresFirebaseNotice.contains("ডাউনলোড"))
 
         // 4. WhatsApp friend SMS & Messenger reply extraction
         val waFriendTurn = ai.generateCompanionReply(
@@ -420,28 +422,24 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `banner ad container defaults to requested auctionr HTTPS url and rejects unsafe schemes`() {
+    fun `banner ad section is disabled by default`() {
         val defaultConfig = com.example.model.AppConfig()
-        assertEquals(
-            "https://auctionr.org/4/9ef9d1d918fa128597c9e3243b06d0ae",
-            defaultConfig.bannerAdUrl
-        )
-        assertEquals(
-            "https://auctionr.org/4/9ef9d1d918fa128597c9e3243b06d0ae",
-            com.example.ui.sanitizeBannerHttpsUrl(defaultConfig.bannerAdUrl)
-        )
-        assertEquals(null, com.example.ui.sanitizeBannerHttpsUrl("http://auctionr.org/4/9ef9d1d918fa128597c9e3243b06d0ae"))
+        assertFalse(defaultConfig.bannerAdEnabled)
         assertEquals(null, com.example.ui.sanitizeBannerHttpsUrl("javascript:alert(1)"))
         assertEquals(null, com.example.ui.sanitizeBannerHttpsUrl("file:///etc/passwd"))
         assertEquals(null, com.example.ui.sanitizeBannerHttpsUrl("https://127.0.0.1/test"))
     }
 
     @Test
-    fun `admin google key verification validates input, masks key preview, and persists in preferences`() = runBlocking {
+    fun `admin google key verification validates input, sanitizes pasted keys, masks preview, and persists in preferences`() = runBlocking {
         val ai = SathiAiService()
         val blankResult = ai.verifyGoogleApiKey("   ", SathiLanguage.BN)
         assertTrue(blankResult.isFailure)
 
+        assertEquals(
+            "AIzaSyTestKey1234567890",
+            SathiAiService.sanitizeApiKeyInput("  \"AIzaSyTestKey\n\t 1234567890\" \u200B ")
+        )
         assertEquals("AIza••••••7890", com.example.ui.maskApiKeyPreview("AIzaSyDemoKey1234567890"))
         assertEquals("", com.example.ui.maskApiKeyPreview("   "))
 
@@ -451,5 +449,176 @@ class ExampleRobolectricTest {
         assertEquals("AIzaTestSample1234567890", prefs.settingsFlow.first().customGeminiApiKey)
         prefs.saveCustomGeminiApiKey("")
         assertEquals("", prefs.settingsFlow.first().customGeminiApiKey)
+    }
+
+    @Test
+    fun `capability questions never trigger web search and web relevance blocks unrelated articles`() = runBlocking {
+        val ai = SathiAiService()
+        val cap1 = ai.generateCompanionReply(
+            userMessage = "তুমি কি ওয়েব সার্চ করতে পারো?",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertEquals(PhoneActionType.NONE, cap1.actionType)
+        assertTrue(cap1.replyText.contains("সাথী এআই"))
+        assertFalse(cap1.replyText.contains("চলচ্চিত্র"))
+
+        val cap2 = ai.generateCompanionReply(
+            userMessage = "তুমি কি গুগল সার্চ করতে পারো?",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertEquals(PhoneActionType.NONE, cap2.actionType)
+
+        // Ensure unrelated Bengali film result has 0 relevance score for a Google search capability query
+        val ws = com.example.data.WebSearchService()
+        val score = ws.scoreRelevance(
+            source = com.example.model.WebSource(
+                title = "বাংলাদেশের চলচ্চিত্র তালিকা",
+                snippet = "১৯৫৬ সালে মুক্তিপ্রাপ্ত চলচ্চিত্র।",
+                url = "https://bn.wikipedia.org/"
+            ),
+            tokens = listOf("কোয়ান্টাম", "কম্পিউটার")
+        )
+        assertEquals(0, score)
+
+        // Ensure all-Bangladesh news helper uses whole Bangladesh, not Khulna only
+        val offline = OfflineCompanionEngine()
+        val offlineNews = offline.respondOffline("আজকের খবর বলো", SathiLanguage.BN, "বাইজিদ")
+        assertEquals(PhoneActionType.NONE, offlineNews.actionType)
+        assertTrue(offlineNews.replyText.contains("বাংলাদেশ"))
+    }
+
+    @Test
+    fun `hands-free barge-in, day-night theme persistence, 2GB brain budget, reference image generation, and key extraction work`() = runBlocking {
+        // 1. Voice barge-in RMS detector: triggers on sustained human speech above baseline, ignores low/short echo
+        assertTrue(
+            com.example.data.VoiceController.shouldTriggerVoiceBargeIn(
+                recentWindowRms = listOf(2900.0, 3200.0, 3050.0),
+                baselineRms = 750.0
+            )
+        )
+        assertFalse(
+            com.example.data.VoiceController.shouldTriggerVoiceBargeIn(
+                recentWindowRms = listOf(800.0, 2900.0, 900.0),
+                baselineRms = 750.0
+            )
+        )
+        assertFalse(
+            com.example.data.VoiceController.shouldTriggerVoiceBargeIn(
+                recentWindowRms = listOf(1100.0, 1150.0, 1120.0),
+                baselineRms = 750.0
+            )
+        )
+
+        // 2. Day / Night theme preference defaults to DAY and switches cleanly
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = com.example.core.SathiPreferences(context)
+        assertEquals(com.example.core.SathiThemeMode.DAY, prefs.settingsFlow.first().themeMode)
+        prefs.setThemeMode(com.example.core.SathiThemeMode.NIGHT)
+        assertEquals(com.example.core.SathiThemeMode.NIGHT, prefs.settingsFlow.first().themeMode)
+        prefs.setThemeMode(com.example.core.SathiThemeMode.DAY)
+
+        // 3. 2 GB Smart Brain budget & key sanitization
+        val packManager = com.example.data.OfflinePackManager(context)
+        assertEquals(2L * 1024L * 1024L * 1024L, com.example.data.OfflinePackManager.MAX_BRAIN_STORAGE_BYTES)
+        assertTrue(packManager.getStorageBudgetLabel(SathiLanguage.BN).contains("2.00 GB"))
+        assertEquals(
+            "AIzaSyDemoExtractKey1234567890",
+            SathiAiService.sanitizeApiKeyInput("API Key: AIzaSyDemoExtractKey1234567890 (copy)")
+        )
+
+        // 4. Reference-image guided generation returns valid downloadable bitmap
+        val refBmp = android.graphics.Bitmap.createBitmap(100, 100, android.graphics.Bitmap.Config.ARGB_8888)
+        refBmp.eraseColor(android.graphics.Color.rgb(255, 200, 40))
+        val imgRepo = PlaceholderSathiImageGenRepository()
+        val refOutcome = imgRepo.generateImage("Golden sunrise variant", SathiLanguage.BN, refBmp).getOrThrow()
+        assertTrue(refOutcome.bitmap.width >= 512)
+        assertTrue(refOutcome.caption.contains("উদাহরণ"))
+    }
+
+    @Test
+    fun `exact youtube open vs explicit query, friend search on whatsapp and messenger, sms writing, and contact transliteration work cleanly`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val ai = SathiAiService(com.example.data.OfflinePackManager(context))
+        val offline = OfflineCompanionEngine()
+
+        // 1. Plain YouTube open NEVER searches "Bangla music" or stray words like "তুমি"
+        val ytOpenOnline = ai.generateCompanionReply(
+            userMessage = "তুমি ইউটিউব খোলো",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertEquals(PhoneActionType.OPEN_APP, ytOpenOnline.actionType)
+        assertEquals("YouTube", ytOpenOnline.actionParam)
+
+        val ytOpenOffline = offline.respondOffline("ইউটিউব অ্যাপ অন করো", SathiLanguage.BN, "বাইজিদ")
+        assertEquals(PhoneActionType.OPEN_APP, ytOpenOffline.actionType)
+        assertEquals("YouTube", ytOpenOffline.actionParam)
+
+        // 2. Explicit YouTube search keeps strictly what user asked
+        val ytSearch = ai.generateCompanionReply(
+            userMessage = "ইউটিউবে বাংলা নাটক সার্চ করো",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertEquals(PhoneActionType.YOUTUBE, ytSearch.actionType)
+        assertEquals("বাংলা নাটক", ytSearch.actionParam)
+
+        // 3. Info query mentioning greeting or app name is NOT hijacked as greeting or app open
+        val infoTurn = ai.generateCompanionReply(
+            userMessage = "হ্যালো, ইউটিউব থেকে কীভাবে আয় করে?",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertEquals(PhoneActionType.WEB_SEARCH, infoTurn.actionType)
+
+        // 4. WhatsApp & Messenger friend search by name (without SMS body)
+        val waSearchFriend = ai.generateCompanionReply(
+            userMessage = "হোয়াটসঅ্যাপে আমার ফ্রেন্ড তানভীরকে খোঁজো",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertEquals(PhoneActionType.SOCIAL_MESSAGE_CONFIRM, waSearchFriend.actionType)
+        assertEquals("WhatsApp", waSearchFriend.actionParam)
+        assertEquals("তানভীর", waSearchFriend.recipientParam)
+        assertEquals("", waSearchFriend.secondaryParam)
+
+        val msgSearchFriend = offline.respondOffline("মেসেঞ্জারে রহিমকে খুঁজো", SathiLanguage.BN, "বাইজিদ")
+        assertEquals(PhoneActionType.SOCIAL_MESSAGE_CONFIRM, msgSearchFriend.actionType)
+        assertEquals("Messenger", msgSearchFriend.actionParam)
+        assertEquals("রহিম", msgSearchFriend.recipientParam)
+        assertEquals("", msgSearchFriend.secondaryParam)
+
+        // 5. Varied Bengali friend SMS writing phrasing
+        val smsWriteTurn = ai.generateCompanionReply(
+            userMessage = "মেসেঞ্জারে ফ্রেন্ড সাকিবকে এই এসএমএসটা করো যে কাল দেখা হবে",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertEquals(PhoneActionType.SOCIAL_MESSAGE_CONFIRM, smsWriteTurn.actionType)
+        assertEquals("Messenger", smsWriteTurn.actionParam)
+        assertEquals("সাকিব", smsWriteTurn.recipientParam)
+        assertTrue(smsWriteTurn.secondaryParam.contains("কাল দেখা হবে"))
+
+        // 6. Bengali-to-Latin contact transliteration matching
+        assertTrue(com.example.data.DeviceActionExecutor.matchesContactName("MD Rahim Uddin", "রহিম"))
+        assertTrue(com.example.data.DeviceActionExecutor.matchesContactName("Tanvir Hasan", "তানভীর"))
+        assertTrue(com.example.data.DeviceActionExecutor.matchesContactName("Karim Ahmed", "করিম"))
+        assertFalse(com.example.data.DeviceActionExecutor.matchesContactName("Jahidul Islam", "রহিম"))
     }
 }

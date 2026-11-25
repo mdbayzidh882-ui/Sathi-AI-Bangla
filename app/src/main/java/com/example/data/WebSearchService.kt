@@ -51,9 +51,12 @@ class WebSearchService {
 
             val results = mutableListOf<WebSource>()
 
-            // 4. Live news / sports / scores -> Google News RSS for Bangladesh + Global
+            // 4. Live news / sports / scores -> Google News RSS for all of Bangladesh + Global
             if (isNewsOrScoreQuery(lower)) {
-                results.addAll(fetchGoogleNewsRss(trimmed, language))
+                val newsItems = fetchGoogleNewsRss(trimmed, language)
+                if (newsItems.isNotEmpty()) {
+                    return@withContext newsItems.take(5)
+                }
             }
 
             // 5. Multi-engine web search (Bing RSS + Wikipedia Extracts + Wikidata + DuckDuckGo JSON + News fallback)
@@ -84,24 +87,30 @@ class WebSearchService {
                 if (results.size < 2 && wikiLang == "bn") {
                     results.addAll(fetchWikipediaExtracts(cleanTopic, "en"))
                 }
-
-                // Google News RSS final live web fallback
-                if (results.isEmpty()) {
-                    results.addAll(fetchGoogleNewsRss(cleanTopic, language))
-                }
             }
 
             val tokens = normalizedStem.lowercase()
                 .split(Regex("\\s+"))
                 .filter { it.length >= 2 }
 
-            results
+            val scored = results
                 .distinctBy { it.url.ifBlank { it.title } }
-                .sortedByDescending { src -> scoreRelevance(src, tokens) }
-                .take(4)
+                .map { src -> src to scoreRelevance(src, tokens) }
+                .filter { (_, score) -> tokens.isEmpty() || score >= 2 }
+                .sortedByDescending { it.second }
+                .map { it.first }
+
+            if (scored.isNotEmpty()) {
+                scored.take(4)
+            } else {
+                results
+                    .distinctBy { it.url.ifBlank { it.title } }
+                    .filter { src -> tokens.isEmpty() || scoreRelevance(src, tokens) >= 1 }
+                    .take(3)
+            }
         }
 
-    private fun scoreRelevance(source: WebSource, tokens: List<String>): Int {
+    internal fun scoreRelevance(source: WebSource, tokens: List<String>): Int {
         if (tokens.isEmpty()) return 1
         val titleLower = source.title.lowercase()
         val bodyLower = source.snippet.lowercase()
@@ -388,7 +397,8 @@ class WebSearchService {
     private fun fetchGoogleNewsRss(query: String, language: SathiLanguage): List<WebSource> {
         return try {
             val cleanQuery = query
-                .replace(Regex("(আজকের|খবর|সংবাদ|জানাও|বলো|দাও|news|latest|today)", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("(সারা\\s+বাংলাদেশের|বাংলাদেশের|বাংলাদেশ|সারা|দেশের|আজকের|নতুন|সব|খবর|সংবাদ|শিরোনাম|জানাও|জানতে|চাই|বলো|বলুন|শোনাও|দাও|bangladesh|all|headlines|news|latest|today)", RegexOption.IGNORE_CASE), " ")
+                .replace(Regex("[?,!।\\s]+"), " ")
                 .trim()
             val url = if (cleanQuery.isBlank() || cleanQuery.length < 3) {
                 if (language == SathiLanguage.BN) {
@@ -409,7 +419,7 @@ class WebSearchService {
             client.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return emptyList()
                 val xml = resp.body?.string() ?: return emptyList()
-                parseRssItems(xml, defaultFallbackLabel = "Google News Bangladesh").take(4)
+                parseRssItems(xml, defaultFallbackLabel = "Google News Bangladesh").take(5)
             }
         } catch (_: Exception) {
             emptyList()
@@ -430,7 +440,7 @@ class WebSearchService {
             var sourceName = ""
 
             var eventType = parser.eventType
-            while (eventType != XmlPullParser.END_DOCUMENT && items.size < 4) {
+            while (eventType != XmlPullParser.END_DOCUMENT && items.size < 5) {
                 when (eventType) {
                     XmlPullParser.START_TAG -> {
                         currentTag = parser.name.orEmpty()

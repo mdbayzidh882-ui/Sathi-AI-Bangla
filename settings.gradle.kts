@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "Sathi"
+rootProject.name = "Sathi AI"
 
 include(":app")

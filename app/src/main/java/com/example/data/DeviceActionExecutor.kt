@@ -117,12 +117,17 @@ class DeviceActionExecutor(context: Context) {
     ): ActionOutcome {
         val lower = platform.lowercase()
         val textToSend = messageBody.trim()
+        val rawRecipient = recipientName.trim()
+        val contactMatch = if (rawRecipient.isNotBlank()) resolveContactMatch(rawRecipient) else Pair("", "")
+        val resolvedNameOrQuery = contactMatch.first.ifBlank { rawRecipient }
+        val translitRecipient = transliterateBnToLatin(rawRecipient)
 
-        // Always copy drafted text to clipboard so pasting into any comment/reply box takes 1 tap
-        if (textToSend.isNotBlank()) {
+        // Copy message body (or friend name for quick 1-tap paste in friend-search mode)
+        val clipboardContent = textToSend.ifBlank { resolvedNameOrQuery }
+        if (clipboardContent.isNotBlank()) {
             try {
                 val cm = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                cm.setPrimaryClip(ClipData.newPlainText("Sathi Draft", textToSend))
+                cm.setPrimaryClip(ClipData.newPlainText("Sathi Draft", clipboardContent))
             } catch (_: Exception) {
             }
         }
@@ -141,35 +146,49 @@ class DeviceActionExecutor(context: Context) {
             else -> listOf("com.whatsapp", "com.facebook.orca")
         }
 
-        // Stage Accessibility auto-fill if user has Sathi Screen Reader enabled for one-tap comment/reply filling
-        SathiScreenReaderService.stagePendingAutoFill(targetPackages, textToSend)
+        // Stage Accessibility two-step friend search + compose-box write
+        SathiScreenReaderService.stagePendingSocialFlow(
+            targetPackages = targetPackages,
+            recipientName = resolvedNameOrQuery,
+            transliteratedRecipient = translitRecipient,
+            messageText = textToSend
+        )
 
         val pm = appContext.packageManager
         val installedPkg = targetPackages.firstOrNull { pkg ->
             pm.getLaunchIntentForPackage(pkg) != null
         }
 
-        // 1. WhatsApp direct contact chat launch when a friend's number or contact is found
+        // 1. WhatsApp direct contact chat launch when phone number / Android contact is matched
         val isWhatsApp = lower.contains("whatsapp") || lower.contains("হোয়াটস") || lower.contains("হোয়াটস")
-        if (isWhatsApp && recipientName.isNotBlank()) {
-            val rawDigits = resolvePhoneDigits(recipientName)
-            val waPhone = normalizeWhatsAppNumber(rawDigits)
+        if (isWhatsApp && rawRecipient.isNotBlank()) {
+            val waPhone = normalizeWhatsAppNumber(contactMatch.second.ifBlank { resolvePhoneDigits(rawRecipient) })
             if (waPhone.length >= 10) {
                 try {
-                    val encoded = URLEncoder.encode(textToSend, "UTF-8")
-                    val waIntent = Intent(
-                        Intent.ACTION_VIEW,
-                        Uri.parse("https://api.whatsapp.com/send?phone=$waPhone&text=$encoded")
-                    ).apply {
+                    val waUrl = if (textToSend.isNotBlank()) {
+                        val encoded = URLEncoder.encode(textToSend, "UTF-8")
+                        "https://api.whatsapp.com/send?phone=$waPhone&text=$encoded"
+                    } else {
+                        "https://api.whatsapp.com/send?phone=$waPhone"
+                    }
+                    val waIntent = Intent(Intent.ACTION_VIEW, Uri.parse(waUrl)).apply {
                         if (installedPkg != null) setPackage(installedPkg)
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     }
                     appContext.startActivity(waIntent)
                     return ActionOutcome.Executed(
                         if (language == SathiLanguage.BN) {
-                            "$recipientName-এর WhatsApp চ্যাটে লেখা প্রস্তুত করে খোলা হয়েছে।"
+                            if (textToSend.isNotBlank()) {
+                                "$resolvedNameOrQuery-এর WhatsApp চ্যাটে লেখা প্রস্তুত করে খোলা হয়েছে।"
+                            } else {
+                                "$resolvedNameOrQuery-এর WhatsApp চ্যাট খোলা হয়েছে।"
+                            }
                         } else {
-                            "Opened WhatsApp chat for $recipientName with your message ready."
+                            if (textToSend.isNotBlank()) {
+                                "Opened WhatsApp chat for $resolvedNameOrQuery with your message ready."
+                            } else {
+                                "Opened WhatsApp chat for $resolvedNameOrQuery."
+                            }
                         }
                     )
                 } catch (_: Exception) {
@@ -177,7 +196,51 @@ class DeviceActionExecutor(context: Context) {
             }
         }
 
-        // 2. Direct Share Intent works natively for WhatsApp & Messenger contact/reply selection!
+        // 2. Friend search only (no message text): launch app directly (never empty ACTION_SEND)
+        val accessibilityActive = SathiScreenReaderService.isAccessibilityEnabled(appContext)
+        if (textToSend.isBlank()) {
+            if (installedPkg != null) {
+                pm.getLaunchIntentForPackage(installedPkg)?.let { launch ->
+                    launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    appContext.startActivity(launch)
+                    return ActionOutcome.Executed(
+                        if (language == SathiLanguage.BN) {
+                            if (accessibilityActive && resolvedNameOrQuery.isNotBlank()) {
+                                "$platform খোলা হয়েছে — '$resolvedNameOrQuery'-কে স্বয়ংক্রিয়ভাবে খোঁজা হচ্ছে।"
+                            } else {
+                                "$platform খোলা হয়েছে — সার্চ বক্সে পেস্ট করতে বন্ধুর নাম '$resolvedNameOrQuery' কপি করা আছে।"
+                            }
+                        } else {
+                            if (accessibilityActive && resolvedNameOrQuery.isNotBlank()) {
+                                "Opened $platform — searching for '$resolvedNameOrQuery'."
+                            } else {
+                                "Opened $platform — copied friend name '$resolvedNameOrQuery' so you can paste in Search."
+                            }
+                        }
+                    )
+                }
+            }
+            return openInstalledApp(platform, language)
+        }
+
+        // 3. When Accessibility is enabled & recipient is known in WhatsApp/Messenger, launch app directly so two-step flow searches friend & types text
+        if (accessibilityActive && resolvedNameOrQuery.isNotBlank() && installedPkg != null &&
+            (installedPkg.contains("whatsapp") || installedPkg.contains("orca") || installedPkg.contains("mlite"))
+        ) {
+            pm.getLaunchIntentForPackage(installedPkg)?.let { launch ->
+                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                appContext.startActivity(launch)
+                return ActionOutcome.Executed(
+                    if (language == SathiLanguage.BN) {
+                        "$platform খোলা হয়েছে — '$resolvedNameOrQuery'-কে খুঁজে মেসেজটি লিখে দেওয়া হচ্ছে।"
+                    } else {
+                        "Opened $platform — locating '$resolvedNameOrQuery' and writing your message."
+                    }
+                )
+            }
+        }
+
+        // 4. Direct Share Intent for WhatsApp & Messenger when Accessibility is off (or no recipient specified)
         if (installedPkg != null && (installedPkg.contains("whatsapp") || installedPkg.contains("orca") || installedPkg.contains("mlite"))) {
             try {
                 val sendIntent = Intent(Intent.ACTION_SEND).apply {
@@ -187,8 +250,8 @@ class DeviceActionExecutor(context: Context) {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 appContext.startActivity(sendIntent)
-                val friendHintBn = if (recipientName.isNotBlank()) " '$recipientName' নির্বাচন করে পাঠান।" else ""
-                val friendHintEn = if (recipientName.isNotBlank()) " Pick '$recipientName' to send." else ""
+                val friendHintBn = if (resolvedNameOrQuery.isNotBlank()) " '$resolvedNameOrQuery' নির্বাচন করুন।" else ""
+                val friendHintEn = if (resolvedNameOrQuery.isNotBlank()) " Pick '$resolvedNameOrQuery' to open chat." else ""
                 return ActionOutcome.Executed(
                     if (language == SathiLanguage.BN) {
                         "$platform-এ লেখা প্রস্তুত করে খোলা হয়েছে (ক্লিপবোর্ডেও কপি আছে)।" + friendHintBn
@@ -206,9 +269,9 @@ class DeviceActionExecutor(context: Context) {
                 appContext.startActivity(launch)
                 return ActionOutcome.Executed(
                     if (language == SathiLanguage.BN) {
-                        "$platform খোলা হয়েছে ও লেখাটি কপি করা আছে — কমেন্ট বা রিপ্লাই বক্সে পেস্ট করুন।"
+                        "$platform খোলা হয়েছে ও লেখাটি কপি করা আছে — কমেন্ট বা মেসেজ বক্সে পেস্ট করুন।"
                     } else {
-                        "Opened $platform and copied your text — paste it into the comment or reply box."
+                        "Opened $platform and copied your text — paste it into the message box."
                     }
                 )
             }
@@ -234,24 +297,29 @@ class DeviceActionExecutor(context: Context) {
     }
 
     private fun resolvePhoneDigits(targetOrName: String): String {
+        return resolveContactMatch(targetOrName).second
+    }
+
+    private fun resolveContactMatch(targetOrName: String): Pair<String, String> {
         val directDigits = targetOrName.filter { it.isDigit() || it == '+' }
         if (directDigits.count { it.isDigit() } >= 6) {
-            return directDigits
+            return Pair(targetOrName.trim(), directDigits)
         }
         val queryName = targetOrName.trim()
-        if (queryName.length < 2) return ""
+        if (queryName.length < 2) return Pair("", "")
 
         val hasContactPerm = ContextCompat.checkSelfPermission(
             appContext,
             Manifest.permission.READ_CONTACTS
         ) == PackageManager.PERMISSION_GRANTED
-        if (!hasContactPerm) return ""
+        if (!hasContactPerm) return Pair("", "")
 
         return try {
             val projection = arrayOf(
                 ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
                 ContactsContract.CommonDataKinds.Phone.NUMBER
             )
+            // First try direct SQL LIKE match
             appContext.contentResolver.query(
                 ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
                 projection,
@@ -260,14 +328,35 @@ class DeviceActionExecutor(context: Context) {
                 null
             )?.use { cursor ->
                 if (cursor.moveToFirst()) {
+                    val nameIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
                     val numberIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
-                    if (numberIdx >= 0) {
-                        cursor.getString(numberIdx).orEmpty().filter { it.isDigit() || it == '+' }
-                    } else ""
-                } else ""
-            }.orEmpty()
+                    val disp = if (nameIdx >= 0) cursor.getString(nameIdx).orEmpty() else ""
+                    val num = if (numberIdx >= 0) cursor.getString(numberIdx).orEmpty().filter { it.isDigit() || it == '+' } else ""
+                    if (num.isNotEmpty()) return Pair(disp, num)
+                }
+            }
+
+            // Second pass: transliteration & phonetic match across device contacts (e.g., "রহিম" -> "MD Rahim")
+            appContext.contentResolver.query(
+                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                projection,
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                val nameIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+                val numberIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                while (cursor.moveToNext()) {
+                    val disp = if (nameIdx >= 0) cursor.getString(nameIdx).orEmpty() else ""
+                    val num = if (numberIdx >= 0) cursor.getString(numberIdx).orEmpty().filter { it.isDigit() || it == '+' } else ""
+                    if (disp.isNotBlank() && num.isNotBlank() && matchesContactName(disp, queryName)) {
+                        return Pair(disp, num)
+                    }
+                }
+            }
+            Pair("", "")
         } catch (_: Exception) {
-            ""
+            Pair("", "")
         }
     }
 
@@ -282,20 +371,39 @@ class DeviceActionExecutor(context: Context) {
     }
 
     private fun openYouTube(query: String, language: SathiLanguage): ActionOutcome {
+        val cleanQuery = query.trim()
+        if (cleanQuery.isBlank()) {
+            return openInstalledApp("YouTube", language)
+        }
         return try {
-            val encoded = URLEncoder.encode(query.ifBlank { "Bangla music" }, "UTF-8")
-            val intent = Intent(
-                Intent.ACTION_VIEW,
-                Uri.parse("https://www.youtube.com/results?search_query=$encoded")
-            ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+            val encoded = URLEncoder.encode(cleanQuery, "UTF-8")
+            val searchUri = Uri.parse("https://www.youtube.com/results?search_query=$encoded")
+            val pm = appContext.packageManager
+            val ytPkg = "com.google.android.youtube"
+            val hasYtApp = pm.getLaunchIntentForPackage(ytPkg) != null
+            val intent = Intent(Intent.ACTION_VIEW, searchUri).apply {
+                if (hasYtApp) setPackage(ytPkg)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
             appContext.startActivity(intent)
             ActionOutcome.Executed(
-                if (language == SathiLanguage.BN) "ইউটিউবে খোঁজা হচ্ছে: $query" else "Opening YouTube: $query"
+                if (language == SathiLanguage.BN) "ইউটিউবে '$cleanQuery' খোঁজা হচ্ছে" else "Searching YouTube for '$cleanQuery'"
             )
         } catch (_: Exception) {
-            ActionOutcome.Failed(
-                if (language == SathiLanguage.BN) "ইউটিউব খোলা যায়নি।" else "Could not open YouTube."
-            )
+            try {
+                val encoded = URLEncoder.encode(cleanQuery, "UTF-8")
+                appContext.startActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/results?search_query=$encoded"))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+                ActionOutcome.Executed(
+                    if (language == SathiLanguage.BN) "ইউটিউবে '$cleanQuery' খোঁজা হচ্ছে" else "Searching YouTube for '$cleanQuery'"
+                )
+            } catch (_: Exception) {
+                ActionOutcome.Failed(
+                    if (language == SathiLanguage.BN) "ইউটিউব খোলা যায়নি।" else "Could not open YouTube."
+                )
+            }
         }
     }
 
@@ -561,6 +669,135 @@ class DeviceActionExecutor(context: Context) {
             ActionOutcome.Failed(
                 if (language == SathiLanguage.BN) "অ্যাপটি খোলা যায়নি।" else "Failed to open app."
             )
+        }
+    }
+
+    companion object {
+        private val bnConsonants = mapOf(
+            'ক' to "k", 'খ' to "kh", 'গ' to "g", 'ঘ' to "gh", 'ঙ' to "ng",
+            'চ' to "ch", 'ছ' to "chh", 'জ' to "j", 'ঝ' to "jh", 'ঞ' to "n",
+            'ট' to "t", 'ঠ' to "th", 'ড' to "d", 'ঢ' to "dh", 'ণ' to "n",
+            'ত' to "t", 'থ' to "th", 'দ' to "d", 'ধ' to "dh", 'ন' to "n",
+            'প' to "p", 'ফ' to "f", 'ব' to "b", 'ভ' to "bh", 'ম' to "m",
+            'য' to "j", 'র' to "r", 'ল' to "l", 'শ' to "sh", 'ষ' to "sh",
+            'স' to "s", 'হ' to "h", '\u09DC' to "r", '\u09DD' to "rh",
+            '\u09DF' to "y", 'ৎ' to "t"
+        )
+        private val bnIndependentVowels = mapOf(
+            'অ' to "o", 'আ' to "a", 'ই' to "i", 'ঈ' to "i",
+            'উ' to "u", 'ঊ' to "u", 'ঋ' to "ri", 'এ' to "e",
+            'ঐ' to "oi", 'ও' to "o", 'ঔ' to "ou"
+        )
+        private val bnMatras = mapOf(
+            'া' to "a", 'ি' to "i", 'ী' to "i", 'ু' to "u", 'ূ' to "u",
+            'ৃ' to "ri", 'ে' to "e", 'ৈ' to "oi", 'ো' to "o", 'ৌ' to "ou"
+        )
+
+        fun transliterateBnToLatin(input: String): String {
+            val trimmed = input
+                .replace("\u09A1\u09BC", "\u09DC")
+                .replace("\u09A2\u09BC", "\u09DD")
+                .replace("\u09AF\u09BC", "\u09DF")
+                .trim()
+            if (trimmed.isEmpty()) return ""
+            val out = StringBuilder()
+            var lastWasConsonant = false
+            for (i in trimmed.indices) {
+                val ch = trimmed[i]
+                when {
+                    ch in bnConsonants -> {
+                        if (lastWasConsonant && trimmed.getOrNull(i - 1) != '্') {
+                            out.append('o')
+                        }
+                        out.append(bnConsonants[ch])
+                        lastWasConsonant = true
+                    }
+                    ch == '্' -> {
+                        lastWasConsonant = false
+                    }
+                    ch in bnMatras -> {
+                        out.append(bnMatras[ch])
+                        lastWasConsonant = false
+                    }
+                    ch in bnIndependentVowels -> {
+                        out.append(bnIndependentVowels[ch])
+                        lastWasConsonant = false
+                    }
+                    ch == 'ং' || ch == 'ঁ' -> {
+                        out.append('n')
+                        lastWasConsonant = false
+                    }
+                    ch == 'ঃ' -> {
+                        out.append('h')
+                        lastWasConsonant = false
+                    }
+                    ch.isLetterOrDigit() || ch == ' ' -> {
+                        out.append(ch.lowercaseChar())
+                        lastWasConsonant = false
+                    }
+                }
+            }
+            return out.toString().replace(Regex("\\s+"), " ").trim()
+        }
+
+        fun phoneticSkeleton(latin: String): String {
+            val s = latin.lowercase()
+                .replace("ph", "f")
+                .replace("bh", "v")
+                .replace("dh", "d")
+                .replace("th", "t")
+                .replace("kh", "k")
+                .replace("gh", "g")
+                .replace("jh", "j")
+                .replace("sh", "s")
+                .replace("chh", "c")
+                .replace("ch", "c")
+                .replace("ee", "i")
+                .replace("oo", "u")
+                .replace('z', 'j')
+                .replace('q', 'k')
+                .replace('w', 'v')
+                .filter { it.isLetterOrDigit() }
+            if (s.isEmpty()) return ""
+            val sb = StringBuilder()
+            var prev = '\u0000'
+            for (idx in s.indices) {
+                val c = s[idx]
+                val isVowel = c in charArrayOf('a', 'e', 'i', 'o', 'u', 'y')
+                // Keep initial vowel if word starts with one; drop interior vowels to tolerate Bengali o/a/i/ee variance
+                if (idx == 0 || !isVowel) {
+                    if (c != prev) {
+                        sb.append(c)
+                        prev = c
+                    }
+                }
+            }
+            return sb.toString()
+        }
+
+        fun matchesContactName(displayName: String, queryName: String): Boolean {
+            val disp = displayName.trim()
+            val query = queryName.trim()
+            if (disp.isEmpty() || query.length < 2) return false
+            if (disp.contains(query, ignoreCase = true)) return true
+
+            val queryLatin = if (query.any { it in '\u0980'..'\u09FF' }) {
+                transliterateBnToLatin(query)
+            } else {
+                query.lowercase()
+            }
+            if (queryLatin.length < 2) return false
+            if (disp.lowercase().contains(queryLatin)) return true
+
+            val querySkel = phoneticSkeleton(queryLatin)
+            if (querySkel.length < 2) return false
+
+            val dispWords = disp.split(Regex("[\\s._-]+")).filter { it.isNotBlank() }
+            return dispWords.any { word ->
+                val wordLatin = if (word.any { it in '\u0980'..'\u09FF' }) transliterateBnToLatin(word) else word.lowercase()
+                wordLatin.contains(queryLatin) || phoneticSkeleton(wordLatin) == querySkel ||
+                    (querySkel.length >= 3 && phoneticSkeleton(wordLatin).contains(querySkel))
+            }
         }
     }
 }

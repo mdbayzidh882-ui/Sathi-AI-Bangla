@@ -6,11 +6,13 @@ import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.core.BitmapUtils
 import com.example.core.LocalSettingsState
 import com.example.core.NetworkMonitor
 import com.example.core.OfflinePackState
 import com.example.core.OfflinePackTier
 import com.example.core.SathiPreferences
+import com.example.core.SathiThemeMode
 import com.example.data.ActionOutcome
 import com.example.data.DeviceActionExecutor
 import com.example.data.GeneratedImageOutcome
@@ -93,7 +95,7 @@ class SathiViewModel(
             Log.w(TAG, "Profile stream error", error)
             emit(null)
         }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), null)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     val memories: StateFlow<List<UserMemory>> = repository.observeMemories(currentUserId)
         .catch { error ->
@@ -101,17 +103,17 @@ class SathiViewModel(
             Log.w(TAG, "Memories stream error", error)
             emit(emptyList())
         }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val globalConfig: StateFlow<AppConfig> = repository.observeGlobalConfig()
         .catch { error ->
             if (error is CancellationException) throw error
             emit(AppConfig())
         }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), AppConfig())
+        .stateIn(viewModelScope, SharingStarted.Eagerly, AppConfig())
 
     val localSettings: StateFlow<LocalSettingsState> = preferences.settingsFlow
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), LocalSettingsState())
+        .stateIn(viewModelScope, SharingStarted.Eagerly, LocalSettingsState())
 
     val chatSessions: StateFlow<List<ChatSession>> = repository.observeChatSessions(currentUserId)
         .catch { error ->
@@ -222,7 +224,7 @@ class SathiViewModel(
             ChatMessage(
                 id = UUID.randomUUID().toString(),
                 isUser = false,
-                text = "আসসালামু আলাইকুম $name! আমি সাথী, আপনার ব্যক্তিগত এআই বন্ধু। নিচের মাইক্রোফোন বাটনে ট্যাপ করে বাংলা বা ইংরেজিতে কথা বলুন।",
+                text = "আসসালামু আলাইকুম $name! আমি সাথী এআই (Sathi AI), আপনার ব্যক্তিগত এআই বন্ধু। নিচের গোল মাইক্রোফোন বাটনে ট্যাপ করে বাংলা বা ইংরেজিতে কথা বলুন।",
                 mood = SathiMood.WARM
             )
         )
@@ -350,16 +352,30 @@ class SathiViewModel(
         voiceController.speak(reply, lang, voice, emotion.sathiMood)
     }
 
+    fun setThemeMode(mode: SathiThemeMode) {
+        viewModelScope.launch {
+            preferences.setThemeMode(mode)
+        }
+    }
+
+    fun toggleDayNightTheme() {
+        val next = when (localSettings.value.themeMode) {
+            SathiThemeMode.NIGHT -> SathiThemeMode.DAY
+            else -> SathiThemeMode.NIGHT
+        }
+        setThemeMode(next)
+    }
+
     fun saveCustomGeminiApiKey(apiKey: String) {
         viewModelScope.launch {
-            val trimmed = apiKey.trim()
-            preferences.saveCustomGeminiApiKey(trimmed)
-            if (trimmed.isBlank()) {
+            val cleaned = SathiAiService.sanitizeApiKeyInput(apiKey)
+            preferences.saveCustomGeminiApiKey(cleaned, verified = false)
+            if (cleaned.isBlank()) {
                 _googleKeyCheckState.value = GoogleKeyCheckState.Idle
             }
             val lang = currentLanguage()
             _bannerState.value = UiBannerState.Info(
-                if (trimmed.isBlank()) {
+                if (cleaned.isBlank()) {
                     if (lang == SathiLanguage.BN) "Google সার্চ চাবি মুছে ফেলা হয়েছে।" else "Google Search key cleared."
                 } else {
                     if (lang == SathiLanguage.BN) "Google সার্চ চাবি সুরক্ষিতভাবে সংরক্ষিত হয়েছে!" else "Google Search key saved securely!"
@@ -370,23 +386,35 @@ class SathiViewModel(
 
     fun saveAndVerifyGoogleApiKey(rawKey: String) {
         viewModelScope.launch {
-            val trimmed = rawKey.trim()
+            val cleaned = SathiAiService.sanitizeApiKeyInput(rawKey)
             val lang = currentLanguage()
-            if (trimmed.isBlank()) {
-                preferences.saveCustomGeminiApiKey("")
+            if (cleaned.isBlank()) {
+                preferences.saveCustomGeminiApiKey("", verified = false)
                 _googleKeyCheckState.value = GoogleKeyCheckState.Idle
                 _bannerState.value = UiBannerState.Info(
                     if (lang == SathiLanguage.BN) "Google চাবি মুছে ফেলা হয়েছে।" else "Google key cleared."
                 )
                 return@launch
             }
-            preferences.saveCustomGeminiApiKey(trimmed)
+            preferences.saveCustomGeminiApiKey(cleaned, verified = false)
             _googleKeyCheckState.value = GoogleKeyCheckState.Verifying
-            val check = aiService.verifyGoogleApiKey(trimmed, lang)
+            val check = aiService.verifyGoogleApiKey(cleaned, lang)
             check.onSuccess { msg ->
+                preferences.saveCustomGeminiApiKey(cleaned, verified = true)
+                preferences.setOfflinePackTier(OfflinePackTier.DEEP)
+                preferences.setAutoVoiceEnabled(true)
+                voiceController.setAutoVoiceEnabled(true)
                 _googleKeyCheckState.value = GoogleKeyCheckState.Connected(msg)
-                _bannerState.value = UiBannerState.Info(msg)
+                _bannerState.value = UiBannerState.Info(
+                    if (lang == SathiLanguage.BN) {
+                        "$msg — স্মার্ট জ্ঞান ভান্ডার (সর্বোচ্চ ২ জিবি) স্বয়ংক্রিয়ভাবে ডাউনলোড শুরু হচ্ছে..."
+                    } else {
+                        "$msg — Automatically syncing Smart Knowledge Brain (up to 2 GB)..."
+                    }
+                )
+                startAutoKnowledgeBrainSync(cleaned)
             }.onFailure { err ->
+                preferences.saveCustomGeminiApiKey(cleaned, verified = false)
                 val msg = err.localizedMessage ?: if (lang == SathiLanguage.BN) "চাবি যাচাই করা যায়নি।" else "Key verification failed."
                 _googleKeyCheckState.value = GoogleKeyCheckState.Failed(msg)
             }
@@ -433,6 +461,8 @@ class SathiViewModel(
         SathiVoiceProfile.fromCode(
             userProfile.value?.preferredVoice ?: localSettings.value.preferredVoiceFallback
         )
+
+    fun isDeviceNetworkOnline(): Boolean = networkMonitor.isOnline()
 
     fun isUsingOfflineMode(): Boolean {
         val settings = localSettings.value
@@ -837,9 +867,9 @@ class SathiViewModel(
                 _generatedImagePreview.value = outcome
                 generatedThumbnail = outcome.bitmap
                 generatedBadge = if (lang == SathiLanguage.BN) {
-                    "নমুনা প্রিভিউ • Firebase AI প্রয়োজন"
+                    if (outcome.isPlaceholderPreview) "নমুনা প্রিভিউ • ডাউনলোডযোগ্য" else "সাথী এআই (Sathi AI) • তৈরি ছবি"
                 } else {
-                    "Sample Preview • Needs Firebase AI"
+                    if (outcome.isPlaceholderPreview) "Sample Preview • Downloadable" else "Sathi AI • Generated Image"
                 }
                 actionLabel = outcome.requiresFirebaseNotice
                 finalReplyText = outcome.caption
@@ -878,27 +908,105 @@ class SathiViewModel(
         }
     }
 
-    fun generateImageFromPrompt(prompt: String, addToChat: Boolean = true) {
+    fun generateImageFromPrompt(
+        prompt: String,
+        addToChat: Boolean = true,
+        referenceBitmap: Bitmap? = null
+    ) {
         val cleanPrompt = prompt.trim()
-        if (cleanPrompt.isEmpty()) return
+        if (cleanPrompt.isEmpty() && referenceBitmap == null) return
+        val effectivePrompt = cleanPrompt.ifBlank { "Artistic portrait variation" }
         val lang = currentLanguage()
         val voice = currentVoice()
         viewModelScope.launch {
-            if (addToChat) {
+            if (addToChat && referenceBitmap == null) {
                 sendUserMessage(
-                    if (lang == SathiLanguage.BN) "ছবি তৈরি করো: $cleanPrompt" else "Create image: $cleanPrompt",
+                    if (lang == SathiLanguage.BN) "ছবি তৈরি করো: $effectivePrompt" else "Create image: $effectivePrompt",
                     speakReply = true
                 )
+            } else if (addToChat && referenceBitmap != null) {
+                val safeRef = BitmapUtils.ensureSoftwareBitmap(referenceBitmap)
+                val userMsg = ChatMessage(
+                    id = UUID.randomUUID().toString(),
+                    isUser = true,
+                    text = if (lang == SathiLanguage.BN) "উদাহরণ ছবি দেখে তৈরি করো: $effectivePrompt" else "Generate from example: $effectivePrompt",
+                    mediaThumbnail = safeRef,
+                    mediaBadge = if (lang == SathiLanguage.BN) "উদাহরণ ছবি" else "Reference"
+                )
+                _messages.value = _messages.value + userMsg
+                _isThinking.value = true
+                try {
+                    val sid = ensureActiveSessionWithTitle(effectivePrompt)
+                    repository.upsertChatMessage(currentUserId, sid, userMsg)
+                    val res = imageGenRepository.generateImage(effectivePrompt, lang, safeRef)
+                    res.onSuccess { outcome ->
+                        _generatedImagePreview.value = outcome
+                        val aiMsg = ChatMessage(
+                            id = UUID.randomUUID().toString(),
+                            isUser = false,
+                            text = outcome.caption,
+                            mood = SathiMood.WARM,
+                            mediaThumbnail = outcome.bitmap,
+                            mediaBadge = if (lang == SathiLanguage.BN) {
+                                if (outcome.isPlaceholderPreview) "উদাহরণভিত্তিক নমুনা • ডাউনলোডযোগ্য" else "সাথী এআই • উদাহরণভিত্তিক ছবি"
+                            } else {
+                                if (outcome.isPlaceholderPreview) "Reference Preview • Downloadable" else "Sathi AI • Reference Art"
+                            },
+                            actionLabel = outcome.requiresFirebaseNotice,
+                            sessionId = sid
+                        )
+                        _messages.value = _messages.value + aiMsg
+                        repository.upsertChatMessage(currentUserId, sid, aiMsg)
+                        startStreamingReveal(aiMsg.id, outcome.caption)
+                        voiceController.speak(outcome.caption, lang, voice, SathiMood.WARM)
+                    }.onFailure { err ->
+                        val errText = err.localizedMessage ?: if (lang == SathiLanguage.BN) "ছবি তৈরি করা যায়নি।" else "Could not generate image."
+                        appendSathiErrorReply(errText, lang, voice, speakReply = true)
+                    }
+                } finally {
+                    _isThinking.value = false
+                }
             } else {
                 _studioLoading.value = true
-                val res = imageGenRepository.generateImage(cleanPrompt, lang)
+                val safeRef = referenceBitmap?.let { BitmapUtils.ensureSoftwareBitmap(it) }
+                val res = imageGenRepository.generateImage(effectivePrompt, lang, safeRef)
                 _studioLoading.value = false
                 res.onSuccess { outcome ->
                     _generatedImagePreview.value = outcome
                     _studioResult.value = outcome.caption
-                    voiceController.speak(outcome.requiresFirebaseNotice, lang, voice, SathiMood.WARM, autoResumeLiveAfter = false)
+                    voiceController.speak(outcome.caption, lang, voice, SathiMood.WARM, autoResumeLiveAfter = false)
+                }.onFailure { err ->
+                    _bannerState.value = UiBannerState.Error(
+                        err.localizedMessage ?: if (lang == SathiLanguage.BN) "ছবি তৈরি করা যায়নি।" else "Could not generate image."
+                    )
                 }
             }
+        }
+    }
+
+    fun saveBitmapToGallery(context: Context, bitmap: Bitmap, titlePrefix: String = "SathiAI") {
+        val lang = currentLanguage()
+        val res = BitmapUtils.saveBitmapToGallery(context, bitmap, titlePrefix)
+        res.onSuccess {
+            _bannerState.value = UiBannerState.Info(
+                if (lang == SathiLanguage.BN) "ছবিটি ফোনের গ্যালারিতে (Pictures/SathiAI) ডাউনলোড হয়েছে ✓"
+                else "Image saved to gallery (Pictures/SathiAI) ✓"
+            )
+        }.onFailure { err ->
+            _bannerState.value = UiBannerState.Error(
+                if (lang == SathiLanguage.BN) "গ্যালারিতে সংরক্ষণ করা যায়নি: ${err.localizedMessage.orEmpty()}"
+                else "Failed to save image: ${err.localizedMessage.orEmpty()}"
+            )
+        }
+    }
+
+    fun shareBitmap(context: Context, bitmap: Bitmap, title: String = "Sathi AI") {
+        val lang = currentLanguage()
+        val res = BitmapUtils.shareImageToApps(context, bitmap, title)
+        res.onFailure {
+            _bannerState.value = UiBannerState.Error(
+                if (lang == SathiLanguage.BN) "ছবি শেয়ার করা যায়নি।" else "Could not share image."
+            )
         }
     }
 
@@ -1049,7 +1157,12 @@ class SathiViewModel(
             _studioLoading.value = true
             val memorySummary = memories.value.take(3).joinToString(", ") { "${it.title}: ${it.content}" }
             val prompt = "Write a short, uplifting, heartfelt 2-sentence morning greeting for ${userProfile.value?.userName ?: displayName}."
-            val res = aiService.runStudioTool(prompt, memorySummary.ifBlank { "New fresh day" }, lang)
+            val res = aiService.runStudioTool(
+                instruction = prompt,
+                input = memorySummary.ifBlank { "New fresh day" },
+                language = lang,
+                apiKey = localSettings.value.customGeminiApiKey
+            )
             _studioLoading.value = false
             res.onSuccess {
                 _morningGreeting.value = it
@@ -1064,7 +1177,13 @@ class SathiViewModel(
         val lang = currentLanguage()
         viewModelScope.launch {
             _studioLoading.value = true
-            val res = aiService.analyzeImage(bitmap, question, lang)
+            val res = aiService.analyzeImage(
+                bitmap = bitmap,
+                question = question,
+                language = lang,
+                isScreenCapture = false,
+                apiKey = localSettings.value.customGeminiApiKey
+            )
             _studioLoading.value = false
             res.onSuccess {
                 _studioResult.value = it
@@ -1104,7 +1223,12 @@ class SathiViewModel(
         }
         viewModelScope.launch {
             _studioLoading.value = true
-            val res = aiService.runStudioTool(instruction, input, lang)
+            val res = aiService.runStudioTool(
+                instruction = instruction,
+                input = input,
+                language = lang,
+                apiKey = localSettings.value.customGeminiApiKey
+            )
             _studioLoading.value = false
             res.onSuccess {
                 _studioResult.value = it
@@ -1202,6 +1326,39 @@ class SathiViewModel(
         }
     }
 
+    fun startAutoKnowledgeBrainSync(apiKey: String = localSettings.value.customGeminiApiKey) {
+        val lang = currentLanguage()
+        if (!networkMonitor.isOnline()) return
+        offlineDownloadJob?.cancel()
+        offlineDownloadJob = viewModelScope.launch {
+            preferences.setOfflinePackState(OfflinePackState.DOWNLOADING, 0.04f)
+            val result = offlinePackManager.syncSmartKnowledgeBrainWithGemini(
+                apiKey = apiKey,
+                aiService = aiService
+            ) { progress, statusBn, statusEn ->
+                _offlineDownloadStatus.value = if (lang == SathiLanguage.BN) statusBn else statusEn
+                preferences.setOfflinePackState(
+                    if (progress >= 1f) OfflinePackState.INSTALLED else OfflinePackState.DOWNLOADING,
+                    progress
+                )
+            }
+            if (result.isSuccess) {
+                preferences.setOfflinePackState(OfflinePackState.INSTALLED, 1f)
+                _offlineDownloadStatus.value = ""
+                _bannerState.value = UiBannerState.Info(
+                    if (lang == SathiLanguage.BN) {
+                        "স্মার্ট জ্ঞান ভান্ডার (${offlinePackManager.getInstalledTopicCount()}টি বিষয় • ${offlinePackManager.getInstalledSizeSummary()} / 2.00 GB) সক্রিয়!"
+                    } else {
+                        "Smart Knowledge Brain (${offlinePackManager.getInstalledTopicCount()} topics • ${offlinePackManager.getInstalledSizeSummary()} / 2.00 GB) ready!"
+                    }
+                )
+            } else {
+                preferences.setOfflinePackState(OfflinePackState.PAUSED, localSettings.value.offlineDownloadProgress)
+                _offlineDownloadStatus.value = ""
+            }
+        }
+    }
+
     fun startOrResumeOfflineDownload(forceRefresh: Boolean = false) {
         val lang = currentLanguage()
         val settings = localSettings.value
@@ -1223,15 +1380,28 @@ class SathiViewModel(
         offlineDownloadJob?.cancel()
         offlineDownloadJob = viewModelScope.launch {
             preferences.setOfflinePackState(OfflinePackState.DOWNLOADING, settings.offlineDownloadProgress)
-            val result = offlinePackManager.downloadRealOfflinePack(
-                tier = settings.offlinePackTier,
-                forceRefresh = forceRefresh
-            ) { progress, statusBn, statusEn ->
-                _offlineDownloadStatus.value = if (lang == SathiLanguage.BN) statusBn else statusEn
-                preferences.setOfflinePackState(
-                    if (progress >= 1f) OfflinePackState.INSTALLED else OfflinePackState.DOWNLOADING,
-                    progress
-                )
+            val result: Result<*> = if (settings.offlinePackTier == OfflinePackTier.DEEP) {
+                offlinePackManager.syncSmartKnowledgeBrainWithGemini(
+                    apiKey = settings.customGeminiApiKey,
+                    aiService = aiService
+                ) { progress, statusBn, statusEn ->
+                    _offlineDownloadStatus.value = if (lang == SathiLanguage.BN) statusBn else statusEn
+                    preferences.setOfflinePackState(
+                        if (progress >= 1f) OfflinePackState.INSTALLED else OfflinePackState.DOWNLOADING,
+                        progress
+                    )
+                }
+            } else {
+                offlinePackManager.downloadRealOfflinePack(
+                    tier = settings.offlinePackTier,
+                    forceRefresh = forceRefresh
+                ) { progress, statusBn, statusEn ->
+                    _offlineDownloadStatus.value = if (lang == SathiLanguage.BN) statusBn else statusEn
+                    preferences.setOfflinePackState(
+                        if (progress >= 1f) OfflinePackState.INSTALLED else OfflinePackState.DOWNLOADING,
+                        progress
+                    )
+                }
             }
             if (result.isSuccess) {
                 preferences.setOfflinePackState(OfflinePackState.INSTALLED, 1f)
@@ -1271,10 +1441,17 @@ class SathiViewModel(
     }
 
     fun getOfflinePackStorageSummary(): String =
-        "${offlinePackManager.getInstalledSizeSummary()} • ${offlinePackManager.getInstalledTopicCount()} topics"
+        offlinePackManager.getStorageBudgetLabel(currentLanguage())
+
+    fun getOfflineBrainBudgetSummary(language: SathiLanguage): String =
+        offlinePackManager.getStorageBudgetLabel(language)
 
     fun installOfflineBengaliTts() {
         offlinePackManager.openSystemTtsVoiceInstaller()
+    }
+
+    fun openOfflineSpeechRecognitionSettings() {
+        voiceController.openOfflineSpeechRecognitionSettings()
     }
 
     // --- Admin Panel ---
