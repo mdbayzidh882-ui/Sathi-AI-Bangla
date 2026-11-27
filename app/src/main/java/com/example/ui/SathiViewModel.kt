@@ -1768,6 +1768,10 @@ class SathiViewModel(
         }
     }
 
+    fun setAutoVirtualWindowEnabled(enabled: Boolean) {
+        viewModelScope.launch { preferences.setAutoVirtualWindowEnabled(enabled) }
+    }
+
     fun addSosContact(name: String, phone: String) {
         val cleanName = name.trim()
         val cleanPhone = phone.trim()

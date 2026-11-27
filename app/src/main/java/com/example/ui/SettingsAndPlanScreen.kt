@@ -194,6 +194,7 @@ fun SettingsAndPlanScreen(
             onSelectScrollLimit = { viewModel.setScrollLimit(it) },
             onToggleStopOnUserTouch = { viewModel.setStopOnUserTouch(it) },
             onToggleAppLock = { viewModel.setAppLockEnabled(it) },
+            onToggleAutoVirtualWindow = { viewModel.setAutoVirtualWindowEnabled(it) },
             onAddSosContact = { n, p -> viewModel.addSosContact(n, p) },
             onRemoveSosContact = { viewModel.removeSosContact(it) },
             onSaveSosMessage = { viewModel.saveSosMessage(it) },

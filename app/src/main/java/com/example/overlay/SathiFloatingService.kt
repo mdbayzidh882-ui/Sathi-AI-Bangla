@@ -83,10 +83,15 @@ class SathiFloatingService : Service() {
     private var chatHistoryContainer: LinearLayout? = null
     private var chatScrollView: ScrollView? = null
     private var statusTextView: TextView? = null
+    private var headerOrbView: FloatingVoiceOrbView? = null
     private var panelWaveView: FloatingVoiceWaveBarView? = null
     private var isPausedForGame: Boolean = false
     private var wasLiveBeforeGame: Boolean = false
     private var cachedAutoVoice: Boolean = true
+    private var cachedOrbStyle: SathiOrbStyle = SathiOrbStyle.ORBIT_BLUE
+    private var cachedReduceMotion: Boolean = false
+    private var autoLaunchedByAppExit: Boolean = false
+    private var dockedInsideApp: Boolean = false
     private var lastSpokenBriefingId: String? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -115,15 +120,25 @@ class SathiFloatingService : Service() {
                     voiceController?.setStartEndSoundsEnabled(s.startEndSoundsEnabled)
                     cachedLanguage = SathiLanguage.fromCode(s.preferredLanguageFallback)
                     cachedVoice = SathiVoiceProfile.fromCode(s.preferredVoiceFallback)
+                    cachedOrbStyle = s.orbStyle
+                    cachedReduceMotion = s.reduceMotion || s.batterySaver
                     bubbleView?.setOrbAppearance(
-                        style = s.orbStyle,
-                        reduceMotion = s.reduceMotion || s.batterySaver
+                        style = cachedOrbStyle,
+                        reduceMotion = cachedReduceMotion
+                    )
+                    headerOrbView?.setOrbAppearance(
+                        style = cachedOrbStyle,
+                        reduceMotion = cachedReduceMotion
                     )
                 }
             }
             launch {
                 voiceController?.state?.collect { vs ->
                     bubbleView?.setVoiceState(
+                        listening = vs.listening,
+                        speaking = vs.speaking
+                    )
+                    headerOrbView?.setVoiceState(
                         listening = vs.listening,
                         speaking = vs.speaking
                     )
@@ -188,7 +203,10 @@ class SathiFloatingService : Service() {
             panelView?.visibility = View.GONE
         } else {
             isPausedForGame = false
-            bubbleView?.visibility = View.VISIBLE
+            if (!dockedInsideApp) {
+                bubbleView?.visibility = View.VISIBLE
+                panelView?.visibility = View.VISIBLE
+            }
             if (wasLiveBeforeGame && cachedAutoVoice) {
                 wasLiveBeforeGame = false
                 voiceController?.startLiveSession(cachedLanguage)
@@ -207,6 +225,32 @@ class SathiFloatingService : Service() {
             }
             ACTION_GAME_RESUME -> {
                 applyGamePauseState(false)
+            }
+            ACTION_SHOW_VIRTUAL_WINDOW -> {
+                autoLaunchedByAppExit = true
+                dockedInsideApp = false
+                if (!isPausedForGame) {
+                    bubbleView?.visibility = View.VISIBLE
+                    if (panelView == null) {
+                        showMiniPanel()
+                    } else {
+                        panelView?.visibility = View.VISIBLE
+                    }
+                }
+            }
+            ACTION_DOCK_ON_APP_OPEN -> {
+                if (autoLaunchedByAppExit) {
+                    dockedInsideApp = true
+                    hideMiniPanel()
+                    bubbleView?.visibility = View.GONE
+                }
+            }
+            else -> {
+                autoLaunchedByAppExit = false
+                dockedInsideApp = false
+                if (!isPausedForGame) {
+                    bubbleView?.visibility = View.VISIBLE
+                }
             }
         }
         return START_STICKY
@@ -342,37 +386,89 @@ class SathiFloatingService : Service() {
 
     private fun showMiniPanel() {
         val wm = windowManager ?: return
+        if (panelView != null) {
+            panelView?.visibility = View.VISIBLE
+            return
+        }
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(12), dp(14), dp(12))
             background = GradientDrawable(
                 GradientDrawable.Orientation.TOP_BOTTOM,
-                intArrayOf(Color.parseColor("#EC0B101E"), Color.parseColor("#EC121B31"))
+                intArrayOf(Color.parseColor("#F004142B"), Color.parseColor("#F00A2246"))
             ).apply {
                 cornerRadius = dp(26).toFloat()
-                setStroke(dp(1), Color.parseColor("#6638D9FF"))
+                setStroke(dp(1), Color.parseColor("#7738BDF8"))
             }
-            elevation = dp(16).toFloat()
+            elevation = dp(18).toFloat()
+        }
+
+        val pParams = WindowManager.LayoutParams(
+            dp(336),
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            overlayLayoutType(),
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            x = 0
+            y = dp(48)
+            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         }
 
         val headerRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(4))
         }
+        val miniOrb = FloatingVoiceOrbView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(42), dp(42)).apply {
+                marginEnd = dp(8)
+            }
+            setOrbAppearance(cachedOrbStyle, cachedReduceMotion)
+            val vs = voiceController?.state?.value
+            setVoiceState(vs?.listening == true, vs?.speaking == true)
+        }
+        headerOrbView = miniOrb
+
         val titleTv = TextView(this).apply {
-            text = "✦ Sathi AI • ভার্চুয়াল অ্যাসিস্ট্যান্ট"
-            setTextColor(Color.parseColor("#7BE8FF"))
+            text = "✦ Sathi AI • ভার্চুয়াল উইন্ডো"
+            setTextColor(Color.parseColor("#7DD3FC"))
             textSize = 14.5f
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
         val minBtn = Button(this).apply {
-            text = "—"
+            text = "▁"
             setTextColor(Color.WHITE)
             setBackgroundColor(Color.TRANSPARENT)
             setOnClickListener { hideMiniPanel() }
         }
+        headerRow.addView(miniOrb)
         headerRow.addView(titleTv)
         headerRow.addView(minBtn)
+
+        var dragStartX = 0
+        var dragStartY = 0
+        var dragTouchX = 0f
+        var dragTouchY = 0f
+        headerRow.setOnTouchListener { _, ev ->
+            when (ev.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    dragStartX = pParams.x
+                    dragStartY = pParams.y
+                    dragTouchX = ev.rawX
+                    dragTouchY = ev.rawY
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    pParams.x = dragStartX + (ev.rawX - dragTouchX).toInt()
+                    pParams.y = (dragStartY - (ev.rawY - dragTouchY).toInt()).coerceAtLeast(dp(12))
+                    runCatching { wm.updateViewLayout(card, pParams) }
+                    true
+                }
+                else -> false
+            }
+        }
         card.addView(headerRow)
 
         val statusTv = TextView(this).apply {
@@ -380,7 +476,7 @@ class SathiFloatingService : Service() {
             text = if (mm.isMonitoring) {
                 "👁️ ${mm.appLabel} মনিটর চালু — যেকোনো কিছু জিজ্ঞাসা করুন"
             } else {
-                "বস, যেকোনো অ্যাপের উপরে লাইভ কথা বলুন..."
+                "ভাসমান ভার্চুয়াল উইন্ডো চালু • টেনে সরানো যাবে"
             }
             setTextColor(Color.parseColor("#A5C7F2"))
             textSize = 12f
@@ -403,11 +499,11 @@ class SathiFloatingService : Service() {
         card.addView(waveBar)
 
         val scroll = ScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(168))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(164))
             background = GradientDrawable().apply {
-                setColor(Color.parseColor("#99080D19"))
+                setColor(Color.parseColor("#99040D1C"))
                 cornerRadius = dp(16).toFloat()
-                setStroke(dp(1), Color.parseColor("#33FFFFFF"))
+                setStroke(dp(1), Color.parseColor("#4438BDF8"))
             }
             setPadding(dp(8), dp(8), dp(8), dp(8))
         }
@@ -418,7 +514,10 @@ class SathiFloatingService : Service() {
         chatScrollView = scroll
         chatHistoryContainer = historyLayout
         card.addView(scroll)
-        appendFloatingChatLine(isUser = false, "আসসালামু আলাইকুম বস! আমি Sathi AI — কীভাবে সাহায্য করতে পারি?")
+        appendFloatingChatLine(
+            isUser = false,
+            "অনেকক্ষণ পর তোমার মিষ্টি আওয়াজ শুনলাম বস! আমি সাথী ভার্চুয়াল উইন্ডোতে প্রস্তুত—বলো কী সাহায্য করব?"
+        )
 
         val inputRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -518,17 +617,6 @@ class SathiFloatingService : Service() {
         actionsRow.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(dp(5), 1) })
         actionsRow.addView(closeBtn)
         card.addView(actionsRow)
-
-        val pParams = WindowManager.LayoutParams(
-            dp(336),
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            overlayLayoutType(),
-            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-            y = dp(48)
-        }
 
         panelParams = pParams
         panelView = card
@@ -709,6 +797,8 @@ class SathiFloatingService : Service() {
     }
 
     private fun hideMiniPanel() {
+        headerOrbView?.stopAnim()
+        headerOrbView = null
         panelWaveView?.stopAnim()
         panelWaveView = null
         panelView?.let { v ->
@@ -873,6 +963,8 @@ class SathiFloatingService : Service() {
         const val ACTION_STOP = "com.example.overlay.ACTION_STOP"
         const val ACTION_GAME_PAUSE = "com.example.overlay.ACTION_GAME_PAUSE"
         const val ACTION_GAME_RESUME = "com.example.overlay.ACTION_GAME_RESUME"
+        const val ACTION_SHOW_VIRTUAL_WINDOW = "com.example.overlay.ACTION_SHOW_VIRTUAL_WINDOW"
+        const val ACTION_DOCK_ON_APP_OPEN = "com.example.overlay.ACTION_DOCK_ON_APP_OPEN"
 
         private val _isRunning = MutableStateFlow(false)
         val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()

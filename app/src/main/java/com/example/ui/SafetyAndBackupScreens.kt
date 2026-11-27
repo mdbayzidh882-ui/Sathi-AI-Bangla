@@ -86,6 +86,7 @@ fun PhoneControlAndSafetyScreen(
     onSelectScrollLimit: (Int) -> Unit,
     onToggleStopOnUserTouch: (Boolean) -> Unit,
     onToggleAppLock: (Boolean) -> Unit,
+    onToggleAutoVirtualWindow: (Boolean) -> Unit,
     onAddSosContact: (String, String) -> Unit,
     onRemoveSosContact: (String) -> Unit,
     onSaveSosMessage: (String) -> Unit,
@@ -333,6 +334,76 @@ fun PhoneControlAndSafetyScreen(
                             checked = localSettings.appLockEnabled,
                             onCheckedChange = onToggleAppLock,
                             modifier = Modifier.testTag("app_lock_switch")
+                        )
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (language == SathiLanguage.BN) {
+                                    "অটো ভার্চুয়াল উইন্ডো (বের হলেই ভাসবে)"
+                                } else {
+                                    "Auto Virtual Window on exit"
+                                },
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = if (language == SathiLanguage.BN) {
+                                    "অ্যাপ থেকে বের হলে স্বয়ংক্রিয়ভাবে ভাসমান উইন্ডো চালু হবে"
+                                } else {
+                                    "Automatically open floating Virtual Window whenever you exit Sathi"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = localSettings.autoVirtualWindowEnabled,
+                            onCheckedChange = onToggleAutoVirtualWindow,
+                            modifier = Modifier.testTag("auto_virtual_window_switch")
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            if (!Settings.canDrawOverlays(context)) {
+                                runCatching {
+                                    context.startActivity(
+                                        Intent(
+                                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                            Uri.parse("package:${context.packageName}")
+                                        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    )
+                                }
+                            } else {
+                                val intent = Intent(context, com.example.overlay.SathiFloatingService::class.java).apply {
+                                    action = com.example.overlay.SathiFloatingService.ACTION_SHOW_VIRTUAL_WINDOW
+                                }
+                                runCatching {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                        context.startForegroundService(intent)
+                                    } else {
+                                        context.startService(intent)
+                                    }
+                                }
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("launch_virtual_window_button")
+                    ) {
+                        Text(
+                            if (overlayGranted) {
+                                if (language == SathiLanguage.BN) "এখনই ভার্চুয়াল উইন্ডো দেখুন" else "Open Virtual Window Now"
+                            } else {
+                                if (language == SathiLanguage.BN) "ভার্চুয়াল উইন্ডোর অনুমতি (Overlay) দিন" else "Allow Overlay for Virtual Window"
+                            }
                         )
                     }
                 }

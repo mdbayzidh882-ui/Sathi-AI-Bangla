@@ -3,7 +3,9 @@ package com.example
 import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -41,12 +43,16 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.core.LocalSettingsState
 import com.example.core.SathiPreferences
 import com.example.core.SathiThemeMode
+import com.example.overlay.SathiFloatingService
+import com.example.overlay.SathiScreenReaderService
 import com.example.overlay.SathiWakeWordService
 import com.example.ui.SathiAppNavigation
 import com.example.ui.theme.SathiTheme
 
 class MainActivity : ComponentActivity() {
     private var wakeTriggerTick by mutableIntStateOf(0)
+    private var autoVirtualWindowEnabled: Boolean = true
+    private var skipAutoWindowOnce: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -58,6 +64,9 @@ class MainActivity : ComponentActivity() {
         setContent {
             val prefs = remember { SathiPreferences(applicationContext) }
             val settings by prefs.settingsFlow.collectAsStateWithLifecycle(initialValue = LocalSettingsState())
+            LaunchedEffect(settings.autoVirtualWindowEnabled) {
+                autoVirtualWindowEnabled = settings.autoVirtualWindowEnabled
+            }
             val isNightTheme = when (settings.themeMode) {
                 SathiThemeMode.DAY -> false
                 SathiThemeMode.NIGHT -> true
@@ -87,6 +96,7 @@ class MainActivity : ComponentActivity() {
                         if (settings.preferredLanguageFallback == "bn") "অ্যাপ খুলতে ফোনের পিন বা বায়োমেট্রিক দিন" else "Unlock Sathi AI with your device lock"
                     )
                     if (confirmIntent != null) {
+                        skipAutoWindowOnce = true
                         runCatching { unlockLauncher.launch(confirmIntent) }
                     } else {
                         isAppUnlocked = true
@@ -155,6 +165,47 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
+            }
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        skipAutoWindowOnce = false
+        if (SathiFloatingService.isRunning.value) {
+            runCatching {
+                startService(
+                    Intent(this, SathiFloatingService::class.java).apply {
+                        action = SathiFloatingService.ACTION_DOCK_ON_APP_OPEN
+                    }
+                )
+            }
+        }
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        maybeAutoOpenVirtualWindow()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        maybeAutoOpenVirtualWindow()
+    }
+
+    private fun maybeAutoOpenVirtualWindow() {
+        if (isChangingConfigurations || isFinishing || skipAutoWindowOnce) return
+        if (!autoVirtualWindowEnabled) return
+        if (!Settings.canDrawOverlays(this)) return
+        if (SathiScreenReaderService.isGameModePaused.value) return
+        val intent = Intent(this, SathiFloatingService::class.java).apply {
+            action = SathiFloatingService.ACTION_SHOW_VIRTUAL_WINDOW
+        }
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
             }
         }
     }

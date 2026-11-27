@@ -521,13 +521,15 @@ class ExampleRobolectricTest {
             )
         )
 
-        // 2. Day / Night theme preference defaults to DAY and switches cleanly
+        // 2. Day / Night & Ocean Dark Glass theme preference defaults to NIGHT + OCEAN + Auto Virtual Window and switches cleanly
         val context = ApplicationProvider.getApplicationContext<Context>()
         val prefs = com.example.core.SathiPreferences(context)
+        assertEquals(com.example.core.SathiThemeMode.NIGHT, prefs.settingsFlow.first().themeMode)
+        assertEquals(com.example.core.SathiColorTheme.OCEAN, prefs.settingsFlow.first().colorTheme)
+        assertTrue(prefs.settingsFlow.first().autoVirtualWindowEnabled)
+        prefs.setThemeMode(com.example.core.SathiThemeMode.DAY)
         assertEquals(com.example.core.SathiThemeMode.DAY, prefs.settingsFlow.first().themeMode)
         prefs.setThemeMode(com.example.core.SathiThemeMode.NIGHT)
-        assertEquals(com.example.core.SathiThemeMode.NIGHT, prefs.settingsFlow.first().themeMode)
-        prefs.setThemeMode(com.example.core.SathiThemeMode.DAY)
 
         // 3. 2 GB Smart Brain budget & key sanitization
         val packManager = com.example.data.OfflinePackManager(context)
@@ -819,6 +821,9 @@ class ExampleRobolectricTest {
         prefs.setAnimationStyle(com.example.core.SathiAnimationStyle.SMOOTH)
         prefs.setColorTheme(com.example.core.SathiColorTheme.GOLDEN_DAY)
         assertEquals(com.example.core.SathiThemeMode.DAY, prefs.settingsFlow.first().themeMode)
+        // Restore default Ocean Dark Glass theme
+        prefs.setColorTheme(com.example.core.SathiColorTheme.OCEAN)
+        assertEquals(com.example.core.SathiThemeMode.NIGHT, prefs.settingsFlow.first().themeMode)
 
         // 3. UI flow: Home -> Settings -> Look & feel -> Orb style picker
         composeTestRule.waitForIdle()
@@ -903,8 +908,9 @@ class ExampleRobolectricTest {
         prefs.saveSosContacts(emptyList())
         prefs.saveTodayTasks(emptyList())
 
-        // 5. Live Voice Mode UI + Settings Phone Control & Safety + Data & Backup navigation
+        // 5. Continuous idle mouth wave on Home + Live Voice Mode UI + Settings Phone Control & Safety + Data & Backup navigation
         composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("center_idle_mouth_wave").assertIsDisplayed()
         composeTestRule.onNodeWithText("লাইভ").performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("live_voice_chat_screen").assertIsDisplayed()
@@ -920,6 +926,9 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("open_phone_safety_button").assertIsDisplayed().performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("phone_control_safety_screen").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("phone_control_safety_screen")
+            .performScrollToNode(hasTestTag("auto_virtual_window_switch"))
+        composeTestRule.onNodeWithTag("auto_virtual_window_switch").assertIsDisplayed()
         composeTestRule.onNodeWithTag("phone_control_safety_screen")
             .performScrollToNode(hasTestTag("scroll_limit_chip_10"))
         composeTestRule.onNodeWithTag("scroll_limit_chip_10").assertIsDisplayed()

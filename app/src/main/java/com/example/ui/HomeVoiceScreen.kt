@@ -16,6 +16,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
@@ -140,6 +141,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -150,6 +152,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -168,6 +172,9 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.core.BitmapUtils
@@ -255,6 +262,17 @@ fun HomeVoiceScreen(
         )
     }
     var showOverlayDialog by remember { mutableStateOf(false) }
+    var canDrawOverlays by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                canDrawOverlays = Settings.canDrawOverlays(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     var showAccessibilityDisclosure by remember { mutableStateOf(false) }
     var showQuickKeyAdminDialog by remember { mutableStateOf(false) }
     var quickKeyInput by remember { mutableStateOf(localSettings.customGeminiApiKey) }
@@ -1494,6 +1512,75 @@ fun HomeVoiceScreen(
             onDismiss = { viewModel.dismissIncomingBriefing() }
         )
 
+        // Auto Virtual Window 1-tap Overlay Permission Banner (so it opens automatically on app exit)
+        AnimatedVisibility(visible = localSettings.autoVirtualWindowEnabled && !canDrawOverlays) {
+            Surface(
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.84f),
+                shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .testTag("virtual_window_permission_banner")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.BubbleChart,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (language == SathiLanguage.BN) {
+                                "অটো ভার্চুয়াল উইন্ডো চালু রাখুন"
+                            } else {
+                                "Enable Auto Virtual Window"
+                            },
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = if (language == SathiLanguage.BN) {
+                                "অ্যাপ থেকে বের হলেই ভাসমান উইন্ডো অটো চালু হতে অনুমতি দিন"
+                            } else {
+                                "Allow overlay so Virtual Window pops up when you exit"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Button(
+                        onClick = {
+                            try {
+                                val intent = Intent(
+                                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    Uri.parse("package:${context.packageName}")
+                                ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                                context.startActivity(intent)
+                            } catch (_: Exception) {
+                                showOverlayDialog = true
+                            }
+                        },
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier
+                            .defaultMinSize(minHeight = 48.dp)
+                            .testTag("grant_virtual_window_permission_button")
+                    ) {
+                        Text(
+                            text = if (language == SathiLanguage.BN) "অনুমতি দিন" else "Allow",
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+        }
+
         // Error or Info Banner
         val activeError = voiceState.speechErrorMessage ?: (banner as? UiBannerState.Error)?.message
         val activeInfo = (banner as? UiBannerState.Info)?.message
@@ -2595,7 +2682,7 @@ private fun CenterSathiAiLogo(
     availableHeight: androidx.compose.ui.unit.Dp = 240.dp,
     modifier: Modifier = Modifier
 ) {
-    val targetAlpha = if (isProminent) 0.94f else 0.22f
+    val targetAlpha = if (isProminent) 0.96f else 0.24f
     val animatedAlpha by animateFloatAsState(
         targetValue = targetAlpha,
         animationSpec = tween(durationMillis = 450),
@@ -2604,20 +2691,29 @@ private fun CenterSathiAiLogo(
     val transition = rememberInfiniteTransition(label = "center_logo_pulse")
     val pulseScale by transition.animateFloat(
         initialValue = 1.0f,
-        targetValue = if (isActive) 1.08f else 1.03f,
+        targetValue = if (isActive) 1.09f else 1.035f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = if (isActive) 1100 else 2400, easing = FastOutSlowInEasing),
+            animation = tween(durationMillis = if (isActive) 950 else 2200, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "center_logo_scale"
     )
+    val mouthWavePhase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = (2.0 * kotlin.math.PI).toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = if (isActive) 900 else 1850, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "center_mouth_wave_phase"
+    )
 
     val outerSize = when {
-        availableHeight < 130.dp -> 72.dp
-        availableHeight < 190.dp -> 112.dp
-        else -> 148.dp
+        availableHeight < 130.dp -> 78.dp
+        availableHeight < 190.dp -> 118.dp
+        else -> 156.dp
     }
-    val innerSize = outerSize * 0.76f
+    val innerSize = outerSize * 0.74f
     val showPill = isProminent && availableHeight >= 150.dp
 
     Column(
@@ -2640,11 +2736,24 @@ private fun CenterSathiAiLogo(
                 drawCircle(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            Color(0x55FFF59D),
-                            Color(0x44FFD54F),
+                            Color(0x6638BDF8),
+                            Color(0x55A855F7),
+                            Color(0x22FDE047),
                             Color.Transparent
                         )
                     )
+                )
+                drawCircle(
+                    brush = Brush.sweepGradient(
+                        colors = listOf(
+                            Color(0x8838BDF8),
+                            Color(0x88A855F7),
+                            Color(0x88FDE047),
+                            Color(0x8838BDF8)
+                        )
+                    ),
+                    radius = size.minDimension * 0.44f,
+                    style = Stroke(width = if (isActive) 4f else 2.5f)
                 )
             }
 
@@ -2655,15 +2764,15 @@ private fun CenterSathiAiLogo(
                         width = 2.5.dp,
                         brush = Brush.verticalGradient(
                             colors = listOf(
-                                Color(0xFFFFEE58),
-                                Color(0xFFFFFFFF),
-                                Color(0xFFFFB300)
+                                Color(0xFF38BDF8),
+                                Color(0xFFA855F7),
+                                Color(0xFFFFD54F)
                             )
                         ),
                         shape = CircleShape
                     ),
                 shape = CircleShape,
-                shadowElevation = if (isProminent) 10.dp else 0.dp,
+                shadowElevation = if (isProminent) 12.dp else 0.dp,
                 color = Color.Transparent
             ) {
                 Image(
@@ -2675,19 +2784,63 @@ private fun CenterSathiAiLogo(
                     contentScale = ContentScale.Crop
                 )
             }
+
+            // Continuous animated Mouth / Voice Waveform Arc floating over lower rim even when idle
+            Canvas(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = outerSize * 0.06f)
+                    .width(innerSize * 0.78f)
+                    .height(22.dp)
+                    .testTag("center_idle_mouth_wave")
+            ) {
+                val barCount = 9
+                val spacing = size.width / (barCount + 1)
+                val barWidth = (spacing * 0.48f).coerceAtLeast(3f)
+                val maxBarHeight = size.height * (if (isActive) 0.92f else 0.62f)
+                val minBarHeight = size.height * 0.20f
+
+                drawRoundRect(
+                    color = Color(0xAA04142B),
+                    topLeft = Offset.Zero,
+                    size = size,
+                    cornerRadius = CornerRadius(size.height / 2f, size.height / 2f)
+                )
+
+                for (i in 0 until barCount) {
+                    val centerFactor = 1f - kotlin.math.abs(i - (barCount - 1) / 2f) / ((barCount - 1) / 2f + 0.5f)
+                    val wave = (kotlin.math.sin((mouthWavePhase + i * 0.72f).toDouble()).toFloat() + 1f) * 0.5f
+                    val h = (minBarHeight + (maxBarHeight - minBarHeight) * wave * (0.45f + 0.55f * centerFactor))
+                        .coerceIn(minBarHeight, size.height * 0.92f)
+                    val x = spacing * (i + 1) - barWidth / 2f
+                    val y = (size.height - h) / 2f
+                    val barColor = when {
+                        i % 3 == 0 -> Color(0xFF38BDF8)
+                        i % 3 == 1 -> Color(0xFFC084FC)
+                        else -> Color(0xFFFDE047)
+                    }
+                    drawRoundRect(
+                        color = barColor,
+                        topLeft = Offset(x, y),
+                        size = Size(barWidth, h),
+                        cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f)
+                    )
+                }
+            }
         }
 
         if (showPill) {
             Spacer(modifier = Modifier.height(6.dp))
             Surface(
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.84f),
                 shape = RoundedCornerShape(50),
                 border = BorderStroke(
                     width = 1.dp,
                     brush = Brush.horizontalGradient(
                         colors = listOf(
-                            Color(0xFFFFD54F),
-                            Color(0xFFFFB300)
+                            Color(0xFF38BDF8),
+                            Color(0xFFA855F7),
+                            Color(0xFFFFD54F)
                         )
                     )
                 )
@@ -2743,8 +2896,8 @@ private fun SathiCompanionHubSection(
     ) {
         // 1. Nova-style Interactive Hub Card with curved glowing paths linking Chat / Memory / History / Settings
         Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f)),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.76f)),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.40f)),
             shape = RoundedCornerShape(22.dp),
             modifier = Modifier
                 .fillMaxWidth()
@@ -2916,7 +3069,8 @@ private fun SathiCompanionHubSection(
 
         // 3. Today Tasks Card
         Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)),
             shape = RoundedCornerShape(20.dp),
             modifier = Modifier
                 .fillMaxWidth()

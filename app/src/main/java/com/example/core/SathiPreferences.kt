@@ -113,7 +113,7 @@ data class LocalSettingsState(
     val customGeminiApiKey: String = "",
     val autoVoiceEnabled: Boolean = true,
     val wakeWordEnabled: Boolean = false,
-    val themeMode: SathiThemeMode = SathiThemeMode.DAY,
+    val themeMode: SathiThemeMode = SathiThemeMode.NIGHT,
     val googleKeyVerified: Boolean = false,
     val autoExecuteActions: Boolean = true,
     val autoHandleIncomingComms: Boolean = true,
@@ -123,11 +123,12 @@ data class LocalSettingsState(
     val reduceMotion: Boolean = false,
     val batterySaver: Boolean = false,
     val animationStyle: SathiAnimationStyle = SathiAnimationStyle.SMOOTH,
-    val colorTheme: SathiColorTheme = SathiColorTheme.GOLDEN_DAY,
+    val colorTheme: SathiColorTheme = SathiColorTheme.OCEAN,
     val scrollLimit: Int = 5,
     val stopOnUserTouch: Boolean = true,
     val appLockEnabled: Boolean = false,
     val persistentNotificationEnabled: Boolean = false,
+    val autoVirtualWindowEnabled: Boolean = true,
     val sosContacts: List<com.example.model.SosContact> = emptyList(),
     val sosHelpMessage: String = SathiPreferences.DEFAULT_SOS_MESSAGE,
     val sosIncludeLocation: Boolean = false,
@@ -167,6 +168,7 @@ class SathiPreferences(private val context: Context) {
         val STOP_ON_USER_TOUCH = booleanPreferencesKey("stop_on_user_touch")
         val APP_LOCK_ENABLED = booleanPreferencesKey("app_lock_enabled")
         val PERSISTENT_NOTIFICATION_ENABLED = booleanPreferencesKey("persistent_notification_enabled")
+        val AUTO_VIRTUAL_WINDOW_ENABLED = booleanPreferencesKey("auto_virtual_window_enabled")
         val SOS_CONTACTS_JSON = stringPreferencesKey("sos_contacts_json")
         val SOS_HELP_MESSAGE = stringPreferencesKey("sos_help_message")
         val SOS_INCLUDE_LOCATION = booleanPreferencesKey("sos_include_location")
@@ -180,10 +182,10 @@ class SathiPreferences(private val context: Context) {
     val settingsFlow: Flow<LocalSettingsState> = context.sathiDataStore.data.map { prefs ->
         val themeMode = enumValues<SathiThemeMode>().firstOrNull {
             it.name == prefs[Keys.THEME_MODE]
-        } ?: SathiThemeMode.DAY
+        } ?: SathiThemeMode.NIGHT
         val colorTheme = enumValues<SathiColorTheme>().firstOrNull {
             it.name == prefs[Keys.COLOR_THEME]
-        } ?: if (themeMode == SathiThemeMode.NIGHT) SathiColorTheme.MIDNIGHT_NIGHT else SathiColorTheme.GOLDEN_DAY
+        } ?: if (themeMode == SathiThemeMode.DAY) SathiColorTheme.GOLDEN_DAY else SathiColorTheme.OCEAN
 
         LocalSettingsState(
             offlinePackState = enumValues<OfflinePackState>().firstOrNull {
@@ -223,6 +225,7 @@ class SathiPreferences(private val context: Context) {
             stopOnUserTouch = prefs[Keys.STOP_ON_USER_TOUCH] ?: true,
             appLockEnabled = prefs[Keys.APP_LOCK_ENABLED] ?: false,
             persistentNotificationEnabled = prefs[Keys.PERSISTENT_NOTIFICATION_ENABLED] ?: false,
+            autoVirtualWindowEnabled = prefs[Keys.AUTO_VIRTUAL_WINDOW_ENABLED] ?: true,
             sosContacts = parseSosContacts(prefs[Keys.SOS_CONTACTS_JSON]),
             sosHelpMessage = prefs[Keys.SOS_HELP_MESSAGE]?.takeIf { it.isNotBlank() } ?: DEFAULT_SOS_MESSAGE,
             sosIncludeLocation = prefs[Keys.SOS_INCLUDE_LOCATION] ?: false,
@@ -417,6 +420,12 @@ class SathiPreferences(private val context: Context) {
         }
     }
 
+    suspend fun setAutoVirtualWindowEnabled(enabled: Boolean) {
+        context.sathiDataStore.edit { prefs ->
+            prefs[Keys.AUTO_VIRTUAL_WINDOW_ENABLED] = enabled
+        }
+    }
+
     suspend fun saveSosContacts(contacts: List<com.example.model.SosContact>) {
         val capped = contacts.take(5)
         context.sathiDataStore.edit { prefs ->
@@ -495,6 +504,7 @@ class SathiPreferences(private val context: Context) {
         root.put("stopOnUserTouch", settings.stopOnUserTouch)
         root.put("appLockEnabled", settings.appLockEnabled)
         root.put("persistentNotificationEnabled", settings.persistentNotificationEnabled)
+        root.put("autoVirtualWindowEnabled", settings.autoVirtualWindowEnabled)
         root.put("sosHelpMessage", settings.sosHelpMessage)
         root.put("sosIncludeLocation", settings.sosIncludeLocation)
         root.put("sosContacts", org.json.JSONArray(encodeSosContacts(settings.sosContacts)))
@@ -531,6 +541,9 @@ class SathiPreferences(private val context: Context) {
                 if (root.has("appLockEnabled")) prefs[Keys.APP_LOCK_ENABLED] = root.optBoolean("appLockEnabled")
                 if (root.has("persistentNotificationEnabled")) {
                     prefs[Keys.PERSISTENT_NOTIFICATION_ENABLED] = root.optBoolean("persistentNotificationEnabled")
+                }
+                if (root.has("autoVirtualWindowEnabled")) {
+                    prefs[Keys.AUTO_VIRTUAL_WINDOW_ENABLED] = root.optBoolean("autoVirtualWindowEnabled")
                 }
                 root.optString("sosHelpMessage").takeIf { it.isNotBlank() }?.let { prefs[Keys.SOS_HELP_MESSAGE] = it }
                 if (root.has("sosIncludeLocation")) prefs[Keys.SOS_INCLUDE_LOCATION] = root.optBoolean("sosIncludeLocation")
