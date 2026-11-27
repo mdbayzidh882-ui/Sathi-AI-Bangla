@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import com.example.core.BitmapUtils
+import com.example.core.SathiPreferences
 import com.example.model.MemoryCategory
 import com.example.model.PhoneActionType
 import com.example.model.SathiLanguage
@@ -78,7 +79,8 @@ class SathiAiService(
         webSources: List<WebSource> = emptyList(),
         allowLongTermMemory: Boolean = true,
         apiKey: String = "",
-        userEmotion: UserEmotion? = null
+        userEmotion: UserEmotion? = null,
+        customSystemPrompt: String = SathiPreferences.DEFAULT_BOSS_SYSTEM_PROMPT
     ): Result<SathiTurnResult> {
         var text = userMessage.trim()
         var lower = text.lowercase()
@@ -96,9 +98,9 @@ class SathiAiService(
                 .trim()
             if (remainder.length < 2) {
                 val reply = if (language == SathiLanguage.BN) {
-                    "জি, আমি থেমে গেলাম $userName! বলুন, এখন কী শুনতে বা করতে চান?"
+                    "জি বস, আমি থেমে গেলাম! বলুন, এখন কী শুনতে বা করতে চান?"
                 } else {
-                    "Okay, I stopped right away! What would you like to talk about now?"
+                    "Okay Boss, I stopped right away! What would you like to talk about now?"
                 }
                 return Result.success(simpleTurn(reply, SathiMood.WARM))
             } else {
@@ -166,7 +168,8 @@ class SathiAiService(
                     userName = userName,
                     memories = memories,
                     recentHistory = recentHistory,
-                    userEmotion = userEmotion
+                    userEmotion = userEmotion,
+                    customSystemPrompt = customSystemPrompt
                 )?.let { geminiGrounded ->
                     return Result.success(geminiGrounded.copy(groundedSources = webSources.take(4)))
                 }
@@ -292,9 +295,9 @@ class SathiAiService(
                 else " I also remember your note about '${firstMem.title}'!"
             } else ""
             val reply = if (language == SathiLanguage.BN) {
-                "আসসালামু আলাইকুম $userName! আলহামদুলিল্লাহ, আমি খুব ভালো আছি।$savedHint আজ আপনাকে কীভাবে সাহায্য করতে পারি?"
+                "আসসালামু আলাইকুম বস! আলহামদুলিল্লাহ, আমি খুব ভালো আছি।$savedHint আজ আপনাকে কীভাবে সাহায্য করতে পারি?"
             } else {
-                "Assalamu Alaikum $userName! I'm doing wonderfully, thank you.$savedHint How can I help you today?"
+                "Assalamu Alaikum Boss! I'm doing wonderfully, thank you.$savedHint How can I help you today?"
             }
             return Result.success(simpleTurn(reply, SathiMood.HAPPY))
         }
@@ -314,6 +317,11 @@ class SathiAiService(
                     param = imgPrompt
                 )
             )
+        }
+
+        // 4b. Direct on-screen voice commands (Send, Next, Publish, Upload, Write Title/Caption)
+        detectScreenUiCommand(text, lower, language)?.let { screenTurn ->
+            return Result.success(screenTurn)
         }
 
         // 5. Social Apps & Messaging / Friend Search / Friend SMS / Comment / Reply
@@ -398,26 +406,34 @@ class SathiAiService(
             return Result.success(simpleTurn(reply, SathiMood.WARM, PhoneActionType.ADD_REMINDER, text))
         }
 
-        if (lower.startsWith("call ") || lower.contains("কল কর") || lower.contains("ফোন কর")) {
+        val isHowToQuestion = lower.contains("কীভাবে") || lower.contains("কিভাবে") ||
+            lower.contains("কেমনে") || lower.contains("কি করে") ||
+            lower.contains("নেই কেন") || lower.contains("নাই কেন") ||
+            lower.contains("দেয় না") || lower.contains("দেয় না") || lower.contains("দাও না") ||
+            lower.contains("how to ") || lower.contains("why ") || lower.contains("what is ")
+
+        if (!isHowToQuestion && (lower.startsWith("call ") || lower.contains("কল কর") || lower.contains("ফোন কর"))) {
             val digits = Regex("(\\+?\\d[\\d\\s-]{3,})").find(text)?.value?.trim() ?: ""
             val reply = if (language == SathiLanguage.BN) {
-                "কল করার আগে আপনার নিশ্চিত অনুমতি নিচ্ছি। নিচের বক্সে নিশ্চিত করুন।"
+                "জি বস, কল করার জন্য ডায়ালার প্রস্তুত করছি।"
             } else {
-                "I'm asking for your confirmation first before opening the phone dialer."
+                "Boss, I'm preparing the phone dialer for your confirmation."
             }
             return Result.success(simpleTurn(reply, SathiMood.WARM, PhoneActionType.CALL_CONFIRM, digits))
         }
 
-        if (lower.startsWith("sms ") || lower.startsWith("message ") || lower.contains("মেসেজ পাঠা") ||
-            (lower.contains("এসএমএস") && (lower.contains("কর") || lower.contains("পাঠা")))
+        if (!isHowToQuestion && (lower.startsWith("sms ") || lower.startsWith("message ") || lower.contains("মেসেজ পাঠা") ||
+                (lower.contains("এসএমএস") && (lower.contains("কর") || lower.contains("পাঠা"))))
         ) {
             val digits = Regex("(\\+?\\d[\\d\\s-]{3,})").find(text)?.value?.trim() ?: ""
+            val rec = extractFriendRecipient(text)
+            val cleanBody = extractSocialMessageBody(text, rec).ifBlank { text }
             val reply = if (language == SathiLanguage.BN) {
-                "মেসেজ পাঠানোর আগে আপনার অনুমতি নিচ্ছি। নিচে নিশ্চিত করুন।"
+                "জি বস, আপনার এসএমএসটি প্রস্তুত করছি।"
             } else {
-                "Please confirm below before I prepare your SMS message."
+                "Boss, preparing your SMS message."
             }
-            return Result.success(simpleTurn(reply, SathiMood.WARM, PhoneActionType.SMS_CONFIRM, digits, text))
+            return Result.success(simpleTurn(reply, SathiMood.WARM, PhoneActionType.SMS_CONFIRM, digits, cleanBody, recipient = rec))
         }
 
         if (lower.startsWith("open ") || lower.startsWith("launch ") ||
@@ -457,7 +473,8 @@ class SathiAiService(
                 userName = userName,
                 memories = memories,
                 recentHistory = recentHistory,
-                userEmotion = userEmotion
+                userEmotion = userEmotion,
+                customSystemPrompt = customSystemPrompt
             )?.let { cloudTurn ->
                 return Result.success(cloudTurn)
             }
@@ -498,18 +515,18 @@ class SathiAiService(
         // 13. Acknowledgments
         if (lower == "হইছে" || lower == "হয়েছে" || lower == "ঠিক আছে" || lower == "ok" || lower == "okay") {
             val reply = if (language == SathiLanguage.BN) {
-                "জি, ঠিক আছে $userName! আর কিছু লাগলে আমাকে নির্দ্বিধায় বলুন।"
+                "জি বস, ঠিক আছে! আর কিছু লাগলে আমাকে নির্দ্বিধায় বলুন।"
             } else {
-                "Got it, $userName! Let me know whenever you need anything else."
+                "Got it, Boss! Let me know whenever you need anything else."
             }
             return Result.success(simpleTurn(reply, SathiMood.WARM))
         }
 
         if (lower.contains("ভালোবাসি") || lower.contains("ধন্যবাদ") || lower.contains("thank") || lower.contains("happy") || lower.contains("খুশি")) {
             val reply = if (language == SathiLanguage.BN) {
-                "আপনাকেও অনেক ধন্যবাদ, $userName! আপনার সাথে কথা বলতে আমার সবসময় খুব ভালো লাগে।"
+                "আপনাকেও অনেক ধন্যবাদ বস! আপনার সাথে কথা বলতে আমার সবসময় খুব ভালো লাগে।"
             } else {
-                "Thank you so much, $userName! I always love talking with you."
+                "Thank you so much, Boss! I always love talking with you."
             }
             return Result.success(simpleTurn(reply, SathiMood.PLAYFUL))
         }
@@ -522,7 +539,7 @@ class SathiAiService(
         ) {
             return Result.success(
                 simpleTurn(
-                    reply = if (language == SathiLanguage.BN) "আমি এ বিষয়ে আরও খুঁজে দেখছি..." else "Searching for more details...",
+                    reply = if (language == SathiLanguage.BN) "জি বস, আমি এ বিষয়ে আরও খুঁজে দেখছি..." else "Searching for more details, Boss...",
                     mood = SathiMood.SERIOUS,
                     action = PhoneActionType.WEB_SEARCH,
                     param = lastUserMsg
@@ -533,23 +550,23 @@ class SathiAiService(
         // Emotion-aware empathy fallback
         if (userEmotion == UserEmotion.SAD || userEmotion == UserEmotion.ANGRY || userEmotion == UserEmotion.ANXIOUS) {
             val empathyReply = if (language == SathiLanguage.BN) {
-                "আমি বুঝতে পারছি $userName, আপনার মনটা এখন ভালো নেই (${userEmotion.emoji} ${userEmotion.labelBn})। মন খুলে আমাকে বলুন কী হয়েছে—আমি আপনার পাশেই আছি।"
+                "আমি বুঝতে পারছি বস, আপনার মনটা এখন ভালো নেই (${userEmotion.emoji} ${userEmotion.labelBn})। মন খুলে আমাকে বলুন কী হয়েছে—আমি আপনার পাশেই আছি।"
             } else {
-                "I understand you're feeling ${userEmotion.labelEn.lowercase()} right now, $userName. I'm right here—tell me whatever is on your mind."
+                "I understand you're feeling ${userEmotion.labelEn.lowercase()} right now, Boss. I'm right here—tell me whatever is on your mind."
             }
             return Result.success(simpleTurn(empathyReply, SathiMood.COMFORTING))
         }
 
         val naturalBn = listOf(
-            "আমি আপনার কথা মন দিয়ে শুনছি, $userName। এ বিষয়ে আপনি কী জানতে চান বা করতে চান বলুন?",
-            "জি $userName! আপনি চাইলে যেকোনো বিষয় ওয়েবে সার্চ করতে পারেন, নমুনা ছবি বানাতে বলতে পারেন, অথবা বন্ধুকে WhatsApp/Messenger-এ মেসেজ পাঠাতে বলতে পারেন।",
-            if (lastAiReply.isNotBlank()) "জি $userName, আমরা '${lastUserMsg.take(28)}' নিয়ে কথা বলছিলাম—এখন কী সাহায্য করতে পারি বলুন!"
-            else "আমি সাথেই আছি, $userName। কোন বিষয়টি নিয়ে কথা বলব বা কোন তথ্যটি খুঁজে দেব বলুন!"
+            "বস, আমি আপনার কথা মন দিয়ে শুনছি। এ বিষয়ে আপনি কী জানতে বা করতে চান বলুন?",
+            "জি বস! আপনি চাইলে যেকোনো বিষয় ওয়েবে সার্চ করতে পারেন, ছবি বানাতে বলতে পারেন, অথবা বন্ধুকে WhatsApp/Messenger-এ সরাসরি মেসেজ পাঠাতে বলতে পারেন।",
+            if (lastAiReply.isNotBlank()) "জি বস, আমরা '${lastUserMsg.take(28)}' নিয়ে কথা বলছিলাম—এখন কী সাহায্য করতে পারি বলুন!"
+            else "আমি সাথেই আছি বস। কোন বিষয়টি নিয়ে কথা বলব বা কোন তথ্যটি খুঁজে দেব বলুন!"
         )
         val naturalEn = listOf(
-            "I hear you, $userName. Ask any factual question, generate a sample image, or tap + to share a photo or screen!",
-            "Got it, $userName! You can search the web, send a WhatsApp or Messenger reply, check weather/prayer times, or ask for a story.",
-            "I'm right here with you, $userName. What would you like to explore next?"
+            "I hear you, Boss. Ask any factual question, generate an image, or tap + to share a photo or screen!",
+            "Got it, Boss! You can search the web, send a WhatsApp or Messenger message, check weather/prayer times, or ask for a story.",
+            "I'm right here with you, Boss. What would you like to explore next?"
         )
         val idx = chatCursor++ % naturalBn.size
         val reply = if (language == SathiLanguage.BN) naturalBn[idx] else naturalEn[idx]
@@ -993,27 +1010,8 @@ class SathiAiService(
         }
     }
 
-    private fun isExplicitPhoneControl(lower: String): Boolean {
-        val isInfoQuestion = lower.contains("কীভাবে") || lower.contains("কিভাবে") || lower.contains("সম্পর্কে") ||
-            lower.contains("মালিক কে") || lower.contains("ইতিহাস") || lower.contains("why ") ||
-            lower.contains("how to ") || lower.contains("what is ")
-        if (isInfoQuestion && !lower.contains("খোলো") && !lower.contains("চালাও") && !lower.contains("open ")) {
-            return false
-        }
-        return lower.contains("flashlight") || lower.contains("torch") || lower.contains("ফ্ল্যাশ") || lower.contains("টর্চ") ||
-            lower.contains("volume ") || lower.contains("ভলিউম") ||
-            lower.contains("alarm") || lower.contains("অ্যালার্ম") ||
-            lower.contains("timer") || lower.contains("টাইমার") ||
-            lower.startsWith("call ") || lower.contains("কল কর") || lower.contains("ফোন কর") ||
-            lower.startsWith("sms ") || lower.startsWith("message ") || lower.contains("মেসেজ পাঠা") ||
-            lower.contains("youtube") || lower.contains("ইউটিউব") ||
-            lower.contains("facebook") || lower.contains("ফেসবুক") ||
-            lower.contains("instagram") || lower.contains("ইনস্টাগ্রাম") ||
-            lower.contains("tiktok") || lower.contains("টিকটক") ||
-            lower.contains("messenger") || lower.contains("মেসেঞ্জার") || lower.contains("ম্যাসেঞ্জার") ||
-            lower.contains("whatsapp") || lower.contains("হোয়াটসঅ্যাপ") || lower.contains("হোয়াটসঅ্যাপ") ||
-            lower.startsWith("open ") || lower.contains("খোলো") || lower.contains("চালু করো") || lower.contains("ঢোকো")
-    }
+    private fun isExplicitPhoneControl(lower: String): Boolean =
+        Companion.isExplicitPhoneControl(lower)
 
     private suspend fun callGeminiRestWithSearch(
         apiKey: String,
@@ -1022,7 +1020,8 @@ class SathiAiService(
         userName: String,
         memories: List<UserMemory>,
         recentHistory: List<Pair<Boolean, String>>,
-        userEmotion: UserEmotion? = null
+        userEmotion: UserEmotion? = null,
+        customSystemPrompt: String = SathiPreferences.DEFAULT_BOSS_SYSTEM_PROMPT
     ): SathiTurnResult? = withContext(Dispatchers.IO) {
         val cleanKey = sanitizeApiKeyInput(apiKey)
         if (cleanKey.isBlank()) return@withContext null
@@ -1032,11 +1031,15 @@ class SathiAiService(
             memories.take(8).joinToString("; ") { "${it.title}: ${it.content}" }
         } else ""
         val sysText = buildString {
-            append("You are Sathi AI (সাথী এআই), an extraordinarily smart, analytical, empathetic, Gemini-class AI assistant created by Mohammad Bayzid Hasan (মোহাম্মদ বাইজিদ হাসান). ")
+            val activePrompt = customSystemPrompt.trim().ifBlank { SathiPreferences.DEFAULT_BOSS_SYSTEM_PROMPT }
+            append(activePrompt)
+            append(" Also: You are Sathi AI (সাথী এআই), created by Mohammad Bayzid Hasan (মোহাম্মদ বাইজিদ হাসান). ")
             append("Think step-by-step for complex logic, math, coding, debugging, science, health guidance, legal/business drafting, and Bengali-English translation. ")
-            append("Provide clear, structured, well-reasoned answers without hallucinating facts. ")
             append("Never say 'নমস্কার'. Use 'আসসালামু আলাইকুম' only when greeting. ")
-            append("Address the user as $userName and answer naturally in $langName. Use google_search whenever live news, prices, weather, schedules, or current factual verification helps.")
+            append("Always address the user respectfully as 'বস' (Boss) — user's profile name is $userName — and answer clearly in $langName. Use google_search whenever live news, prices, weather, schedules, or current factual verification helps.")
+            if (language == SathiLanguage.BN) {
+                append(" Deliver concise, factual, purely Bengali (বাংলা) responses without unnecessary English filler words.")
+            }
             if (userEmotion != null) {
                 append(" User's current emotional mood: ${userEmotion.labelEn} (${userEmotion.emoji}); be deeply understanding.")
             }
@@ -1436,6 +1439,108 @@ class SathiAiService(
     )
 
     companion object {
+        fun isExplicitPhoneControl(lower: String): Boolean {
+            val isInfoQuestion = lower.contains("কীভাবে") || lower.contains("কিভাবে") || lower.contains("সম্পর্কে") ||
+                lower.contains("মালিক কে") || lower.contains("ইতিহাস") || lower.contains("why ") ||
+                lower.contains("how to ") || lower.contains("what is ")
+            if (isInfoQuestion && !lower.contains("খোলো") && !lower.contains("চালাও") && !lower.contains("open ")) {
+                return false
+            }
+            return lower.contains("flashlight") || lower.contains("torch") || lower.contains("ফ্ল্যাশ") || lower.contains("টর্চ") ||
+                lower.contains("volume ") || lower.contains("ভলিউম") ||
+                lower.contains("alarm") || lower.contains("অ্যালার্ম") ||
+                lower.contains("timer") || lower.contains("টাইমার") ||
+                lower.startsWith("call ") || lower.contains("কল কর") || lower.contains("ফোন কর") ||
+                lower.startsWith("sms ") || lower.startsWith("message ") || lower.contains("মেসেজ পাঠা") ||
+                lower.contains("youtube") || lower.contains("ইউটিউব") ||
+                lower.contains("facebook") || lower.contains("ফেসবুক") ||
+                lower.contains("instagram") || lower.contains("ইনস্টাগ্রাম") ||
+                lower.contains("tiktok") || lower.contains("টিকটক") ||
+                lower.contains("messenger") || lower.contains("মেসেঞ্জার") || lower.contains("ম্যাসেঞ্জার") ||
+                lower.contains("whatsapp") || lower.contains("হোয়াটসঅ্যাপ") || lower.contains("হোয়াটসঅ্যাপ") ||
+                lower.startsWith("open ") || lower.contains("খোলো") || lower.contains("চালু করো") || lower.contains("ঢোকো")
+        }
+
+        fun wantsImmediateSend(text: String): Boolean {
+            val lower = text.lowercase()
+            return lower.contains("পাঠিয়ে দাও") || lower.contains("পাঠিয়ে দাও") ||
+                lower.contains("সেন্ড করো") || lower.contains("সেন্ড দাও") ||
+                lower.contains("send now") || lower.contains("and send")
+        }
+
+        fun detectScreenUiCommand(
+            text: String,
+            lower: String,
+            language: SathiLanguage
+        ): SathiTurnResult? {
+            if (lower.contains("কীভাবে") || lower.contains("কিভাবে") || lower.contains("how to")) {
+                return null
+            }
+            // Do not intercept explicit WhatsApp/Messenger/Facebook/TikTok friend messaging flows
+            val hasSocialTarget = lower.contains("whatsapp") || lower.contains("হোয়াটস") || lower.contains("হোয়াটস") ||
+                lower.contains("messenger") || lower.contains("মেসেঞ্জার") || lower.contains("ম্যাসেঞ্জার") ||
+                lower.contains("বন্ধু") || lower.contains("ফ্রেন্ড") ||
+                lower.contains("এসএমএস") || lower.contains("sms")
+            if (hasSocialTarget) return null
+
+            // Title / Caption typing on active external screen (e.g., YouTube upload, Facebook post)
+            val titleMatch = Regex("(?:টাইটেল|ক্যাপশন|caption|title)\\s*(?:লেখো|লিখো|লিখে দাও|write|set)?\\s*[:\\-]?\\s*(.+)$", RegexOption.IGNORE_CASE).find(text)
+            if (titleMatch != null) {
+                val content = titleMatch.groupValues.getOrNull(1)?.trim().orEmpty()
+                if (content.isNotBlank()) {
+                    val reply = if (language == SathiLanguage.BN) {
+                        "জি বস, স্ক্রিনে '$content' লিখে দিচ্ছি।"
+                    } else {
+                        "Boss, writing '$content' on screen."
+                    }
+                    return SathiTurnResult(
+                        replyText = reply,
+                        mood = SathiMood.HAPPY,
+                        actionType = PhoneActionType.SCREEN_UI_ACTION,
+                        actionParam = "type",
+                        secondaryParam = content,
+                        shouldSaveMemory = false,
+                        memoryCategory = MemoryCategory.NOTE,
+                        memoryTitle = "",
+                        memoryContent = ""
+                    )
+                }
+            }
+
+            // Short UI button actions on currently open screen
+            if (text.length <= 32) {
+                val actionCmd = when {
+                    lower.contains("নেক্সট") || lower.contains("পরবর্তী") || Regex("\\bnext\\b").containsMatchIn(lower) -> "next"
+                    lower.contains("পাবলিশ") || lower.contains("আপলোড") ||
+                        Regex("\\b(publish|upload)\\b").containsMatchIn(lower) -> "publish"
+                    lower == "পোস্ট করো" || lower == "পোস্ট দাও" || lower == "post now" -> "post"
+                    lower == "সেন্ড করো" || lower == "সেন্ড দাও" || lower == "পাঠাও" ||
+                        lower == "পাঠিয়ে দাও" || lower == "পাঠিয়ে দাও" ||
+                        lower == "মেসেজটা পাঠাও" || lower == "send" || lower == "send now" -> "send"
+                    else -> null
+                }
+                if (actionCmd != null) {
+                    val reply = if (language == SathiLanguage.BN) {
+                        "জি বস, স্ক্রিনের '$actionCmd' বাটনে চাপ দিচ্ছি।"
+                    } else {
+                        "Boss, tapping '$actionCmd' on your screen."
+                    }
+                    return SathiTurnResult(
+                        replyText = reply,
+                        mood = SathiMood.HAPPY,
+                        actionType = PhoneActionType.SCREEN_UI_ACTION,
+                        actionParam = actionCmd,
+                        secondaryParam = "",
+                        shouldSaveMemory = false,
+                        memoryCategory = MemoryCategory.NOTE,
+                        memoryTitle = "",
+                        memoryContent = ""
+                    )
+                }
+            }
+            return null
+        }
+
         fun detectImageGenerationPrompt(text: String, lower: String): String? {
             if (lower.contains("ছবিতে কী") || lower.contains("ছবি বিশ্লেষণ") ||
                 lower.contains("ছবি তোল") || lower.contains("ছবি আপলোড") ||
@@ -1550,10 +1655,21 @@ class SathiAiService(
             val wantsSearchFriend = lower.contains("খোঁজ") || lower.contains("খোজ") || lower.contains("খুঁজ") ||
                 lower.contains("খুজ") || lower.contains("সার্চ") || lower.contains("বের কর") ||
                 lower.contains("search") || lower.contains("find")
+            val isCreativeAsk = lower.contains("গল্প") || lower.contains("কৌতুক") || lower.contains("কবিতা") || lower.contains("খবর")
+            val directedTell = !isCreativeAsk &&
+                !lower.contains("আমাকে") && !lower.contains("তোমাকে") && !lower.contains("আপনাকে") &&
+                (
+                    Regex("([^\\s,।!?]{2,22})(?:-কে|কে)\\s+(?:(?:হোয়াটসঅ্যাপে|হোয়াটসঅ্যাপে|মেসেঞ্জারে|ম্যাসেঞ্জারে|ফেসবুকে|একটু)\\s+)*(?:বলো|জানাও|জানিয়ে দাও)")
+                        .containsMatchIn(lower) ||
+                        (explicitPlatform != null && (lower.contains("বলো") || lower.contains("জানিয়ে")))
+                    )
             val wantsMessageOrComment = lower.contains("মেসেজ") || lower.contains("এসএমএস") ||
                 lower.contains("sms") || lower.contains("কমেন্ট") || lower.contains("কমপ্লেন") ||
                 lower.contains("রিপ্লাই") || lower.contains("এপ্লাই") || lower.contains("জানাও") ||
+                lower.contains("জানিয়ে দাও") || lower.contains("লিখে পাঠা") || lower.contains("মেসেজ দে") ||
+                lower.contains("বলো যে") ||
                 lower.contains("লিখ") || lower.contains("লেখ") || lower.contains("পাঠা") || lower.contains("বলো ওকে") ||
+                directedTell ||
                 lower.contains("message") || lower.contains("comment") || lower.contains("reply") ||
                 lower.contains("send") || lower.contains("post") || lower.contains("write") || lower.contains("text ")
 
@@ -1561,7 +1677,8 @@ class SathiAiService(
             val platform = explicitPlatform ?: when {
                 lower.contains("কমেন্ট") || lower.contains("comment") -> "Facebook"
                 lower.contains("রিপ্লাই") || lower.contains("reply") -> "Messenger"
-                lower.contains("বন্ধু") || lower.contains("ফ্রেন্ড") || lower.contains("জানাও") -> "WhatsApp"
+                lower.contains("বন্ধু") || lower.contains("ফ্রেন্ড") || lower.contains("জানাও") ||
+                    lower.contains("জানিয়ে দাও") || directedTell -> "WhatsApp"
                 else -> return null
             }
 
@@ -1647,6 +1764,7 @@ class SathiAiService(
 
             val stopWords = setOf(
                 "বন্ধু", "ফ্রেন্ড", "আমার", "এই", "ওই", "নাম", "নামে", "হলো", "হল",
+                "আমা", "তোমা", "আপনা", "সাথী", "সাথীকে", "আমাকে", "তোমাকে", "আপনাকে",
                 "whatsapp", "messenger", "facebook", "instagram", "tiktok",
                 "হোয়াটসঅ্যাপ", "হোয়াটসঅ্যাপ", "হোয়াটসঅ্যাপে", "হোয়াটসঅ্যাপে",
                 "মেসেঞ্জার", "মেসেঞ্জারে", "ম্যাসেঞ্জারে", "ফেসবুক", "ফেসবুকে",
@@ -1657,7 +1775,7 @@ class SathiAiService(
                 Regex("([^\\s,।!?]{2,24})\\s+নামে\\s+(?:খোঁজো|খোজো|খুঁজো|সার্চ|বের)"),
                 Regex("(?:আমার\\s+)?(?:বন্ধু|ফ্রেন্ড)\\s+([^\\s,।!?]+?)(?:-কে|কে|-এর|এর|\\s+কে)?\\s+(?:(?:এই|ওই|একটি|একটা|ওকে|তাকে)\\s+)?(?:খোঁজো|খোজো|খুঁজো|খুজ|সার্চ|এসএমএস|মেসেজ|জানাও|রিপ্লাই|কমেন্ট|বলো|লেখ|লিখ|পাঠা)"),
                 Regex("(?:আমার\\s+)?(?:বন্ধু|ফ্রেন্ড)\\s+([^\\s,।!?]+?)(?:-কে|কে|\\s+কে)(?=\\s|$|[.,।!?])"),
-                Regex("([^\\s,।!?]{2,22})(?:-কে|কে)\\s+(?:(?:এই|ওই|একটি|একটা)\\s+)?(?:খোঁজো|খোজো|খুঁজো|সার্চ|এসএমএস|মেসেজ|জানাও|রিপ্লাই|কমেন্ট|বলো|লেখ|লিখ)"),
+                Regex("([^\\s,।!?]{2,22})(?:-কে|কে)\\s+(?:(?:হোয়াটসঅ্যাপে|হোয়াটসঅ্যাপে|মেসেঞ্জারে|ম্যাসেঞ্জারে|ফেসবুকে|এই|ওই|একটি|একটা|একটু)\\s+)*(?:খোঁজো|খোজো|খুঁজো|সার্চ|এসএমএস|মেসেজ|জানাও|জানিয়ে|রিপ্লাই|কমেন্ট|বলো|লেখ|লিখ|পাঠা)"),
                 Regex("([^\\s,।!?]{2,22})(?:-এর|এর)\\s+কাছে(?=\\s|$|[.,।!?])"),
                 Regex("([^\\s,।!?]{2,22})-কে(?=\\s|$|[.,।!?])"),
                 Regex("\\bto\\s+([A-Za-z0-9._-]+)", RegexOption.IGNORE_CASE),
@@ -1680,7 +1798,7 @@ class SathiAiService(
             val quoteMatch = Regex("[\"“'‘]([^\"”'’]{2,})[\"”'’]").find(text)?.groupValues?.getOrNull(1)?.trim()
             if (!quoteMatch.isNullOrBlank()) return quoteMatch
 
-            val afterMarker = Regex("(?:ওকে জানাও|জানাও যে|জানাও|বলো যে|ওকে বলো|এসএমএসটা লেখো|এসএমএসটা করো|এসএমএস লেখো|এসএমএস লিখো|মেসেজ লেখো|মেসেজ লিখো|লিখে দাও|লেখো যে|লিখো যে|লেখো|লিখো|কমেন্ট করো|রিপ্লাই দাও|মেসেজ করো যে|জানিয়ে দাও)\\s+(.+)$")
+            val afterMarker = Regex("(?:ওকে জানাও|জানাও যে|জানাও|জানিয়ে দাও|বলো যে|ওকে বলো|হোয়াটসঅ্যাপে বলো|হোয়াটসঅ্যাপে বলো|মেসেঞ্জারে বলো|এসএমএসটা লেখো|এসএমএসটা করো|এসএমএস লেখো|এসএমএস লিখো|মেসেজ লেখো|মেসেজ লিখো|লিখে দাও|লেখো যে|লিখো যে|লেখো|লিখো|কমেন্ট করো|রিপ্লাই দাও|মেসেজ করো যে|বলো)\\s+(.+)$")
                 .find(text)?.groupValues?.getOrNull(1)?.trim()
             if (!afterMarker.isNullOrBlank() && afterMarker.length >= 2) {
                 return afterMarker

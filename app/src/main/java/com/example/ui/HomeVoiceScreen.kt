@@ -2,6 +2,7 @@ package com.example.ui
 
 import android.Manifest
 import android.app.Activity
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -45,11 +46,15 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
@@ -60,6 +65,7 @@ import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Download
@@ -71,12 +77,14 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.ScreenShare
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Sms
+import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.StopScreenShare
 import androidx.compose.material.icons.filled.ThumbDown
@@ -86,7 +94,9 @@ import androidx.compose.material.icons.filled.ThumbUpOffAlt
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -142,13 +152,20 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.core.BitmapUtils
+import com.example.core.SathiAnimationStyle
+import com.example.core.SathiOrbStyle
+import com.example.core.SathiPreferences
 import com.example.core.SathiThemeMode
+import com.example.data.SathiAiService
 import com.example.model.ChatMessage
 import com.example.model.ChatSession
 import com.example.model.PhoneActionType
@@ -173,6 +190,8 @@ import kotlinx.coroutines.launch
 @Composable
 fun HomeVoiceScreen(
     viewModel: SathiViewModel,
+    onOpenAdminPanel: () -> Unit = {},
+    onOpenThemes: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -195,10 +214,15 @@ fun HomeVoiceScreen(
     val pendingConfirmation by viewModel.pendingConfirmation.collectAsStateWithLifecycle()
     val banner by viewModel.bannerState.collectAsStateWithLifecycle()
     val morningGreeting by viewModel.morningGreeting.collectAsStateWithLifecycle()
+    val googleKeyCheckState by viewModel.googleKeyCheckState.collectAsStateWithLifecycle()
+    val isOwnerAdmin by viewModel.isOwnerAdmin.collectAsStateWithLifecycle()
     val floatingRunning by SathiFloatingService.isRunning.collectAsStateWithLifecycle()
     val screenSharing by SathiScreenShareService.isSharing.collectAsStateWithLifecycle()
     val wakeRunning by SathiWakeWordService.isRunning.collectAsStateWithLifecycle()
     val screenReaderActive by SathiScreenReaderService.isConnected.collectAsStateWithLifecycle()
+    val gameModePaused by SathiScreenReaderService.isGameModePaused.collectAsStateWithLifecycle()
+    val multimediaState by viewModel.multimediaMonitorState.collectAsStateWithLifecycle()
+    val latestIncomingBriefing by viewModel.latestIncomingBriefing.collectAsStateWithLifecycle()
 
     val language = SathiLanguage.fromCode(profile?.preferredLanguage)
     val isOffline = viewModel.isUsingOfflineMode()
@@ -216,6 +240,20 @@ fun HomeVoiceScreen(
     }
     var showOverlayDialog by remember { mutableStateOf(false) }
     var showAccessibilityDisclosure by remember { mutableStateOf(false) }
+    var showQuickKeyAdminDialog by remember { mutableStateOf(false) }
+    var quickKeyInput by remember { mutableStateOf(localSettings.customGeminiApiKey) }
+    var showQuickKeyText by remember { mutableStateOf(false) }
+    var quickKeyPasteNotice by remember { mutableStateOf<String?>(null) }
+    var showPromptDialog by remember { mutableStateOf(false) }
+    var quickPromptInput by remember(localSettings.customSystemPrompt) {
+        mutableStateOf(localSettings.customSystemPrompt)
+    }
+
+    LaunchedEffect(localSettings.customGeminiApiKey) {
+        if (localSettings.customGeminiApiKey.isNotBlank() && quickKeyInput.isBlank()) {
+            quickKeyInput = localSettings.customGeminiApiKey
+        }
+    }
 
     val homeRefImagePickerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
@@ -348,6 +386,7 @@ fun HomeVoiceScreen(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
@@ -552,6 +591,55 @@ fun HomeVoiceScreen(
                             }
                         }
                 )
+                ListItem(
+                    headlineContent = {
+                        Text(
+                            if (language == SathiLanguage.BN) "Sathi System Prompt (এআই নির্দেশনা)"
+                            else "Sathi System Prompt"
+                        )
+                    },
+                    supportingContent = {
+                        Text(
+                            if (language == SathiLanguage.BN) "সাথীর সিস্টেম প্রম্পট দেখুন বা পরিবর্তন করুন"
+                            else "View or update Sathi AI system prompt"
+                        )
+                    },
+                    leadingContent = {
+                        Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    },
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(14.dp))
+                        .testTag("plus_system_prompt_option")
+                        .clickable {
+                            showMediaSheet = false
+                            quickPromptInput = localSettings.customSystemPrompt
+                            showPromptDialog = true
+                        }
+                )
+                ListItem(
+                    headlineContent = {
+                        Text(
+                            if (language == SathiLanguage.BN) "থিম ও অর্ব স্টাইল (Look & feel)"
+                            else "Themes & Orb style"
+                        )
+                    },
+                    supportingContent = {
+                        Text(
+                            if (language == SathiLanguage.BN) "অর্ব স্টাইল, অ্যানিমেশন ও কালার থিম পরিবর্তন করুন"
+                            else "Customize orb style, motion cues, animations & colour theme"
+                        )
+                    },
+                    leadingContent = {
+                        Icon(Icons.Default.Palette, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary)
+                    },
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(14.dp))
+                        .testTag("plus_themes_option")
+                        .clickable {
+                            showMediaSheet = false
+                            onOpenThemes()
+                        }
+                )
                 Spacer(modifier = Modifier.height(16.dp))
             }
         }
@@ -625,6 +713,204 @@ fun HomeVoiceScreen(
             dismissButton = {
                 TextButton(onClick = { showOverlayDialog = false }) {
                     Text(if (language == SathiLanguage.BN) "বাতিল" else "Cancel")
+                }
+            }
+        )
+    }
+
+    if (showQuickKeyAdminDialog) {
+        AlertDialog(
+            onDismissRequest = { showQuickKeyAdminDialog = false },
+            icon = { Icon(Icons.Default.VpnKey, contentDescription = null) },
+            title = {
+                Text(if (language == SathiLanguage.BN) "Google API Key ও অ্যাডমিন" else "Google API Key & Admin")
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = if (language == SathiLanguage.BN) {
+                            "বস, দ্রুত Google API Key পেস্ট ও যাচাই করুন অথবা অ্যাডমিন ড্যাশবোর্ডে যান।"
+                        } else {
+                            "Boss, quickly paste & verify your Google API Key or open Admin Dashboard."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = quickKeyInput,
+                        onValueChange = {
+                            quickKeyInput = SathiAiService.sanitizeApiKeyInput(it)
+                            quickKeyPasteNotice = null
+                        },
+                        label = { Text("Google API Key (AIza...)") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Ascii,
+                            autoCorrectEnabled = false
+                        ),
+                        visualTransformation = if (showQuickKeyText) VisualTransformation.None else PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(onClick = { showQuickKeyText = !showQuickKeyText }) {
+                                Icon(
+                                    imageVector = if (showQuickKeyText) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = if (showQuickKeyText) "Hide key" else "Show key"
+                                )
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                val fromCompose = clipboard.getText()?.text.orEmpty()
+                                val fromSys = runCatching {
+                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                    cm?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
+                                }.getOrDefault("")
+                                val cleaned = SathiAiService.sanitizeApiKeyInput(fromCompose.ifBlank { fromSys })
+                                if (cleaned.isNotBlank()) {
+                                    quickKeyInput = cleaned
+                                    quickKeyPasteNotice = if (language == SathiLanguage.BN) "চাবি পেস্ট হয়েছে ✓" else "Key pasted ✓"
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(if (language == SathiLanguage.BN) "পেস্ট" else "Paste")
+                        }
+                        if (isOwnerAdmin) {
+                            OutlinedButton(
+                                onClick = {
+                                    showQuickKeyAdminDialog = false
+                                    onOpenAdminPanel()
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.AdminPanelSettings, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(if (language == SathiLanguage.BN) "অ্যাডমিন" else "Admin")
+                            }
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            showQuickKeyAdminDialog = false
+                            quickPromptInput = localSettings.customSystemPrompt
+                            showPromptDialog = true
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("quick_open_system_prompt_button")
+                    ) {
+                        Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            if (language == SathiLanguage.BN) "Sathi System Prompt দেখুন / পরিবর্তন করুন"
+                            else "View / Edit Sathi System Prompt"
+                        )
+                    }
+                    if (!quickKeyPasteNotice.isNullOrBlank()) {
+                        Text(quickKeyPasteNotice.orEmpty(), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    }
+                    when (val ks = googleKeyCheckState) {
+                        is GoogleKeyCheckState.Connected -> Text("✓ ${ks.message}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                        is GoogleKeyCheckState.Failed -> Text(ks.message, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
+                        else -> Unit
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    viewModel.saveAndVerifyGoogleApiKey(quickKeyInput)
+                    showQuickKeyAdminDialog = false
+                }) {
+                    Text(if (language == SathiLanguage.BN) "সংরক্ষণ ও চালু" else "Save & Verify")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showQuickKeyAdminDialog = false }) {
+                    Text(if (language == SathiLanguage.BN) "বন্ধ" else "Close")
+                }
+            }
+        )
+    }
+
+    if (showPromptDialog) {
+        AlertDialog(
+            onDismissRequest = { showPromptDialog = false },
+            icon = { Icon(Icons.Default.AutoAwesome, contentDescription = null) },
+            title = {
+                Text(if (language == SathiLanguage.BN) "Sathi AI System Prompt" else "Sathi AI System Prompt")
+            },
+            text = {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = if (language == SathiLanguage.BN) {
+                            "বস, আপনার দেওয়া সিস্টেম প্রম্পটটি ইতিমধ্যেই সেভ করা আছে। প্রয়োজনে এখান থেকে আপডেট বা পেস্ট করতে পারেন:"
+                        } else {
+                            "Boss, your custom Sathi AI System Prompt is saved and active. Edit or paste updates below:"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = quickPromptInput,
+                        onValueChange = { quickPromptInput = it },
+                        label = { Text("Sathi AI System Prompt") },
+                        minLines = 5,
+                        maxLines = 10,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("dialog_system_prompt_input")
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                val fromCompose = clipboard.getText()?.text.orEmpty()
+                                val fromSys = runCatching {
+                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                    cm?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
+                                }.getOrDefault("")
+                                val clipText = fromCompose.ifBlank { fromSys }.trim()
+                                if (clipText.isNotBlank()) {
+                                    quickPromptInput = clipText
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(if (language == SathiLanguage.BN) "পেস্ট" else "Paste")
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                quickPromptInput = SathiPreferences.DEFAULT_BOSS_SYSTEM_PROMPT
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(if (language == SathiLanguage.BN) "ডিফল্ট" else "Default")
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.saveCustomSystemPrompt(quickPromptInput)
+                        showPromptDialog = false
+                    },
+                    modifier = Modifier.testTag("dialog_save_system_prompt_button")
+                ) {
+                    Text(if (language == SathiLanguage.BN) "সংরক্ষণ" else "Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPromptDialog = false }) {
+                    Text(if (language == SathiLanguage.BN) "বন্ধ" else "Close")
                 }
             }
         )
@@ -1006,7 +1292,7 @@ fun HomeVoiceScreen(
                     Spacer(modifier = Modifier.width(8.dp))
                     Column {
                         Text(
-                            text = if (language == SathiLanguage.BN) "সাথী এআই • Sathi AI" else "Sathi AI",
+                            text = "Sathi AI",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
@@ -1024,7 +1310,7 @@ fun HomeVoiceScreen(
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     if (isOffline) {
                         Surface(
@@ -1040,6 +1326,23 @@ fun HomeVoiceScreen(
                                 tint = MaterialTheme.colorScheme.onTertiaryContainer
                             )
                         }
+                    }
+
+                    IconButton(
+                        onClick = { showQuickKeyAdminDialog = true },
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("top_admin_key_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.VpnKey,
+                            contentDescription = if (language == SathiLanguage.BN) "Google চাবি ও অ্যাডমিন" else "Google Key & Admin",
+                            tint = if (localSettings.googleKeyVerified || localSettings.customGeminiApiKey.isNotBlank()) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.secondary
+                            }
+                        )
                     }
 
                     IconButton(
@@ -1126,6 +1429,53 @@ fun HomeVoiceScreen(
                 }
             }
         }
+
+        // Game Mode Auto-Pause Chip
+        AnimatedVisibility(visible = gameModePaused) {
+            Surface(
+                color = MaterialTheme.colorScheme.tertiaryContainer,
+                shape = MaterialTheme.shapes.medium,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 2.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        Icons.Default.SportsEsports,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                    Text(
+                        text = if (language == SathiLanguage.BN) {
+                            "গেম মোড চালু: খেলার সময় ভাসমান বাবল অটো-পজ রয়েছে"
+                        } else {
+                            "Game Mode active: Floating orb auto-paused while gaming"
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                }
+            }
+        }
+
+        // Silent Multimedia Monitoring Banner (YouTube / Facebook / Messenger)
+        MultimediaMonitorBanner(
+            state = multimediaState,
+            language = language
+        )
+
+        // Incoming Call & Message Boss Summary Alert Card
+        IncomingSummaryAlertCard(
+            briefing = latestIncomingBriefing,
+            language = language,
+            onSpeak = { summaryText -> viewModel.speakMessage(summaryText, SathiMood.WARM) },
+            onDismiss = { viewModel.dismissIncomingBriefing() }
+        )
 
         // Error or Info Banner
         val activeError = voiceState.speechErrorMessage ?: (banner as? UiBannerState.Error)?.message
@@ -1379,6 +1729,9 @@ fun HomeVoiceScreen(
             autoVoiceEnabled = localSettings.autoVoiceEnabled,
             mood = activeMood,
             language = language,
+            orbStyle = localSettings.orbStyle,
+            reduceMotion = localSettings.reduceMotion || localSettings.batterySaver,
+            animationStyle = localSettings.animationStyle,
             onOrbClick = handleMicTap,
             onToggleAutoVoice = { viewModel.setAutoVoiceEnabled(!localSettings.autoVoiceEnabled) },
             onInterruptAndSpeak = { viewModel.interruptSpeakingAndListen() },
@@ -1700,6 +2053,9 @@ private fun SathiVoiceOrbBar(
     autoVoiceEnabled: Boolean,
     mood: SathiMood,
     language: SathiLanguage,
+    orbStyle: SathiOrbStyle,
+    reduceMotion: Boolean,
+    animationStyle: SathiAnimationStyle,
     onOrbClick: () -> Unit,
     onToggleAutoVoice: () -> Unit,
     onInterruptAndSpeak: () -> Unit,
@@ -1782,7 +2138,10 @@ private fun SathiVoiceOrbBar(
                         liveActive = liveActive,
                         onClick = onOrbClick,
                         orbSize = 54.dp,
-                        buttonTestTag = "mic_button"
+                        buttonTestTag = "mic_button",
+                        orbStyle = orbStyle,
+                        reduceMotion = reduceMotion,
+                        animationStyle = animationStyle
                     )
 
                     FilledTonalIconButton(
@@ -1866,7 +2225,10 @@ private fun SathiVoiceOrbBar(
                     liveActive = liveActive,
                     onClick = onOrbClick,
                     orbSize = 64.dp,
-                    buttonTestTag = "mic_button"
+                    buttonTestTag = "mic_button",
+                    orbStyle = orbStyle,
+                    reduceMotion = reduceMotion,
+                    animationStyle = animationStyle
                 )
 
                 Spacer(modifier = Modifier.width(8.dp))
@@ -2297,7 +2659,7 @@ private fun CenterSathiAiLogo(
                         tint = MaterialTheme.colorScheme.primary
                     )
                     Text(
-                        text = if (language == SathiLanguage.BN) "সাথী এআই" else "Sathi AI",
+                        text = "Sathi AI",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface

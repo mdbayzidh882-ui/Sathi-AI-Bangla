@@ -5,8 +5,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.ToneGenerator
 import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
 import android.net.ConnectivityManager
@@ -64,6 +66,8 @@ class VoiceController(
     private var consecutiveLiveSilenceCount: Int = 0
     private var busyRetryCount: Int = 0
     private var lastPartialTranscript: String = ""
+    @Volatile
+    private var startEndSoundsEnabled: Boolean = false
 
     // Real-time barge-in voice activity monitor while TTS speaks
     private val bargeInMonitorRunning = AtomicBoolean(false)
@@ -125,8 +129,23 @@ class VoiceController(
                 ) {
                     startListeningInternal(activeLanguage, preferOfflineRecognition || !isNetworkConnected())
                 }
-            }, 320L)
+            }, 380L)
         }
+    }
+
+    fun resumeLiveListeningIfActive(language: SathiLanguage = activeLanguage, preferOffline: Boolean = preferOfflineRecognition) {
+        activeLanguage = language
+        preferOfflineRecognition = preferOffline || !isNetworkConnected()
+        mainHandler.postDelayed({
+            if (_state.value.liveSessionActive &&
+                _state.value.autoVoiceEnabled &&
+                !_state.value.muted &&
+                !_state.value.listening &&
+                !_state.value.speaking
+            ) {
+                startListeningInternal(activeLanguage, preferOfflineRecognition || !isNetworkConnected())
+            }
+        }, 380L)
     }
 
     fun setAutoVoiceEnabled(enabled: Boolean) {
@@ -135,6 +154,22 @@ class VoiceController(
             liveAutoListenAfterTts = false
             stopBargeInMonitor()
             _state.value = _state.value.copy(liveSessionActive = false)
+        }
+    }
+
+    fun setStartEndSoundsEnabled(enabled: Boolean) {
+        startEndSoundsEnabled = enabled
+    }
+
+    private fun playListeningCueSound(isStart: Boolean) {
+        if (!startEndSoundsEnabled) return
+        runCatching {
+            val tone = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 42)
+            val toneType = if (isStart) ToneGenerator.TONE_PROP_BEEP else ToneGenerator.TONE_PROP_ACK
+            tone.startTone(toneType, 110)
+            mainHandler.postDelayed({
+                runCatching { tone.release() }
+            }, 180L)
         }
     }
 
@@ -241,6 +276,7 @@ class VoiceController(
                         override fun onReadyForSpeech(params: Bundle?) {
                             busyRetryCount = 0
                             _state.value = _state.value.copy(listening = true, speechErrorMessage = null)
+                            playListeningCueSound(isStart = true)
                         }
 
                         override fun onBeginningOfSpeech() {
@@ -252,6 +288,7 @@ class VoiceController(
 
                         override fun onEndOfSpeech() {
                             _state.value = _state.value.copy(listening = false)
+                            playListeningCueSound(isStart = false)
                         }
 
                         override fun onError(error: Int) {
@@ -277,31 +314,41 @@ class VoiceController(
                                     if (!_state.value.muted && !_state.value.speaking) {
                                         startListeningInternal(activeLanguage, true)
                                     }
-                                }, 180L)
+                                }, 220L)
                                 return
                             }
 
                             // Recover seamlessly if recognizer was temporarily busy
-                            if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY && busyRetryCount < 3) {
+                            if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY && busyRetryCount < 6) {
                                 busyRetryCount++
                                 _state.value = _state.value.copy(listening = false, speechErrorMessage = null)
                                 mainHandler.postDelayed({
                                     if (_state.value.liveSessionActive && !_state.value.muted && !_state.value.speaking) {
                                         startListeningInternal(activeLanguage, preferOfflineRecognition || !isNetworkConnected())
                                     }
-                                }, 420L)
+                                }, 460L)
                                 return
                             }
 
-                            // Keep hands-free live session alive during silence/pauses without forcing user to tap screen
+                            // Keep hands-free live session alive during silence/pauses/transient audio-focus glitches without requiring user to re-tap
+                            val isRecoverableLiveError = isTimeoutOrNoMatch ||
+                                error == SpeechRecognizer.ERROR_CLIENT ||
+                                error == SpeechRecognizer.ERROR_AUDIO ||
+                                error == SpeechRecognizer.ERROR_SERVER ||
+                                error == SpeechRecognizer.ERROR_NETWORK ||
+                                error == SpeechRecognizer.ERROR_NETWORK_TIMEOUT
                             if (_state.value.liveSessionActive &&
                                 _state.value.autoVoiceEnabled &&
                                 !_state.value.muted &&
-                                (isTimeoutOrNoMatch || error == SpeechRecognizer.ERROR_CLIENT)
+                                isRecoverableLiveError
                             ) {
                                 consecutiveLiveSilenceCount++
                                 _state.value = _state.value.copy(listening = false, speechErrorMessage = null)
-                                val delayMs = if (consecutiveLiveSilenceCount < 10) 280L else 650L
+                                val delayMs = when {
+                                    error == SpeechRecognizer.ERROR_AUDIO -> 520L
+                                    consecutiveLiveSilenceCount < 10 -> 320L
+                                    else -> 700L
+                                }
                                 mainHandler.postDelayed({
                                     if (_state.value.liveSessionActive &&
                                         _state.value.autoVoiceEnabled &&
@@ -346,7 +393,7 @@ class VoiceController(
                                     if (_state.value.liveSessionActive && !_state.value.muted && !_state.value.speaking) {
                                         startListeningInternal(activeLanguage, preferOfflineRecognition || !isNetworkConnected())
                                     }
-                                }, 280L)
+                                }, 320L)
                             }
                         }
 
@@ -521,11 +568,15 @@ class VoiceController(
 
     fun stopListening() {
         mainHandler.post {
+            val wasListening = _state.value.listening
             try {
                 speechRecognizer?.stopListening()
             } catch (_: Exception) {
             }
             _state.value = _state.value.copy(listening = false)
+            if (wasListening) {
+                playListeningCueSound(isStart = false)
+            }
         }
     }
 

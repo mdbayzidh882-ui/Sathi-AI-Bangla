@@ -1,9 +1,15 @@
 package com.example.ui
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import android.util.Log
+import com.example.comm.IncomingCommRecord
+import com.example.comm.IncomingCommunicationManager
+import com.example.overlay.SathiFloatingService
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.core.BitmapUtils
@@ -11,6 +17,9 @@ import com.example.core.LocalSettingsState
 import com.example.core.NetworkMonitor
 import com.example.core.OfflinePackState
 import com.example.core.OfflinePackTier
+import com.example.core.SathiAnimationStyle
+import com.example.core.SathiColorTheme
+import com.example.core.SathiOrbStyle
 import com.example.core.SathiPreferences
 import com.example.core.SathiThemeMode
 import com.example.data.ActionOutcome
@@ -72,6 +81,7 @@ sealed interface GoogleKeyCheckState {
 }
 
 class SathiViewModel(
+    private val appContext: Context,
     private val currentUserId: String,
     private val userEmail: String,
     private val displayName: String,
@@ -188,15 +198,59 @@ class SathiViewModel(
     private val _generatedImagePreview = MutableStateFlow<GeneratedImageOutcome?>(null)
     val generatedImagePreview: StateFlow<GeneratedImageOutcome?> = _generatedImagePreview.asStateFlow()
 
+    val incomingSummaries: StateFlow<List<IncomingCommRecord>> = IncomingCommunicationManager.summaries
+    val latestIncomingBriefing: StateFlow<IncomingCommRecord?> = IncomingCommunicationManager.latestVoiceBriefing
+    val multimediaMonitorState = SathiScreenReaderService.multimediaState
+
     private var offlineDownloadJob: Job? = null
     private var adminObserverJob: Job? = null
     private var streamingJob: Job? = null
+    private var wasLiveVoiceBeforeGame: Boolean = false
+    private var lastHandledBriefingId: String? = null
 
     init {
         viewModelScope.launch {
             launch {
                 preferences.settingsFlow.collect { settings ->
                     voiceController.setAutoVoiceEnabled(settings.autoVoiceEnabled)
+                    voiceController.setStartEndSoundsEnabled(settings.startEndSoundsEnabled)
+                }
+            }
+            launch {
+                SathiScreenReaderService.isGameModePaused.collect { paused ->
+                    val vs = voiceController.state.value
+                    if (paused) {
+                        if (vs.liveSessionActive) {
+                            wasLiveVoiceBeforeGame = true
+                        }
+                        voiceController.stopLiveSession()
+                    } else if (wasLiveVoiceBeforeGame) {
+                        wasLiveVoiceBeforeGame = false
+                        if (localSettings.value.autoVoiceEnabled) {
+                            voiceController.startLiveSession(currentLanguage(), isUsingOfflineMode())
+                        }
+                    }
+                }
+            }
+            launch {
+                IncomingCommunicationManager.latestVoiceBriefing.collect { record ->
+                    if (record != null && record.id != lastHandledBriefingId) {
+                        lastHandledBriefingId = record.id
+                        val briefing = IncomingCommunicationManager.formatBossVoiceBriefing(record)
+                        val msg = ChatMessage(
+                            id = UUID.randomUUID().toString(),
+                            isUser = false,
+                            text = briefing,
+                            mood = SathiMood.WARM,
+                            actionLabel = "${record.type.labelBn} • ${record.appName}"
+                        )
+                        _messages.value = _messages.value + msg
+                        val paused = SathiScreenReaderService.isGameModePaused.value
+                        val floatingActive = SathiFloatingService.isRunning.value
+                        if (!paused && !floatingActive && localSettings.value.autoVoiceEnabled) {
+                            voiceController.speak(briefing, currentLanguage(), currentVoice(), SathiMood.WARM)
+                        }
+                    }
                 }
             }
             repository.ensureUserProfile(currentUserId, displayName, userEmail)
@@ -218,13 +272,13 @@ class SathiViewModel(
     }
 
     private fun seedWelcomeMessage() {
-        val name = displayName.ifBlank { "বন্ধু" }
+        val name = displayName.ifBlank { "বস" }
         _streamingMessageId.value = null
         _messages.value = listOf(
             ChatMessage(
                 id = UUID.randomUUID().toString(),
                 isUser = false,
-                text = "আসসালামু আলাইকুম $name! আমি সাথী এআই (Sathi AI), আপনার ব্যক্তিগত এআই বন্ধু। নিচের গোল মাইক্রোফোন বাটনে ট্যাপ করে বাংলা বা ইংরেজিতে কথা বলুন।",
+                text = "আসসালামু আলাইকুম বস ($name)! আমি Sathi AI, আপনার ব্যক্তিগত এআই বন্ধু। নিচের গোল মাইক্রোফোন বাটনে ট্যাপ করে বাংলা বা ইংরেজিতে কথা বলুন।",
                 mood = SathiMood.WARM
             )
         )
@@ -298,6 +352,58 @@ class SathiViewModel(
         }
     }
 
+    fun setAutoExecuteActions(enabled: Boolean) {
+        viewModelScope.launch {
+            preferences.setAutoExecuteActions(enabled)
+        }
+    }
+
+    fun setAutoHandleIncomingComms(enabled: Boolean) {
+        viewModelScope.launch {
+            preferences.setAutoHandleIncomingComms(enabled)
+        }
+    }
+
+    fun dismissIncomingBriefing() {
+        IncomingCommunicationManager.dismissLatestBriefing()
+    }
+
+    fun clearIncomingSummaries() {
+        IncomingCommunicationManager.clearSummaries()
+    }
+
+    fun saveCustomSystemPrompt(prompt: String) {
+        viewModelScope.launch {
+            preferences.saveCustomSystemPrompt(prompt)
+            val lang = currentLanguage()
+            _bannerState.value = UiBannerState.Info(
+                if (lang == SathiLanguage.BN) "Sathi AI সিস্টেম প্রম্পট সংরক্ষিত হয়েছে ✓"
+                else "Sathi AI System Prompt saved ✓"
+            )
+        }
+    }
+
+    private fun ensureFloatingOrbStartedForExternalApp() {
+        try {
+            if (Settings.canDrawOverlays(appContext) && !SathiFloatingService.isRunning.value) {
+                val intent = Intent(appContext, SathiFloatingService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    appContext.startForegroundService(intent)
+                } else {
+                    appContext.startService(intent)
+                }
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun ensureLiveLoopResumesIfNeeded(speakReply: Boolean) {
+        val vs = voiceState.value
+        if (!speakReply && vs.liveSessionActive && vs.autoVoiceEnabled && !vs.muted && !vs.speaking && !vs.listening) {
+            voiceController.resumeLiveListeningIfActive(currentLanguage(), isUsingOfflineMode())
+        }
+    }
+
     fun interruptSpeakingAndListen() {
         voiceController.interruptAndListen(currentLanguage(), isUsingOfflineMode())
     }
@@ -364,6 +470,43 @@ class SathiViewModel(
             else -> SathiThemeMode.NIGHT
         }
         setThemeMode(next)
+    }
+
+    fun setOrbStyle(style: SathiOrbStyle) {
+        viewModelScope.launch {
+            preferences.setOrbStyle(style)
+        }
+    }
+
+    fun setStartEndSoundsEnabled(enabled: Boolean) {
+        voiceController.setStartEndSoundsEnabled(enabled)
+        viewModelScope.launch {
+            preferences.setStartEndSoundsEnabled(enabled)
+        }
+    }
+
+    fun setReduceMotion(enabled: Boolean) {
+        viewModelScope.launch {
+            preferences.setReduceMotion(enabled)
+        }
+    }
+
+    fun setBatterySaver(enabled: Boolean) {
+        viewModelScope.launch {
+            preferences.setBatterySaver(enabled)
+        }
+    }
+
+    fun setAnimationStyle(style: SathiAnimationStyle) {
+        viewModelScope.launch {
+            preferences.setAnimationStyle(style)
+        }
+    }
+
+    fun setColorTheme(theme: SathiColorTheme) {
+        viewModelScope.launch {
+            preferences.setColorTheme(theme)
+        }
     }
 
     fun saveCustomGeminiApiKey(apiKey: String) {
@@ -644,6 +787,9 @@ class SathiViewModel(
                         if (lang == SathiLanguage.BN) "ভিডিওটি পড়া যায়নি, অনুগ্রহ করে অন্য একটি ভিডিও চেষ্টা করুন।"
                         else "Could not inspect this video file. Please try another clip."
                     )
+                    if (voiceState.value.liveSessionActive && voiceState.value.autoVoiceEnabled && !voiceState.value.muted) {
+                        voiceController.resumeLiveListeningIfActive(lang, isUsingOfflineMode())
+                    }
                 }
             } finally {
                 _isThinking.value = false
@@ -699,17 +845,17 @@ class SathiViewModel(
                 if (settings.offlineModeEnabled || !online) {
                     if (settings.offlinePackState == OfflinePackState.INSTALLED) {
                         val offlineTurn = offlineEngine.respondOffline(text, lang, userName)
-                        handleTurnOutput(offlineTurn, emptyList(), isOffline = true, speakReply = speakReply, lang = lang, voice = voice, sessionId = sid)
+                        handleTurnOutput(offlineTurn, emptyList(), isOffline = true, speakReply = speakReply, lang = lang, voice = voice, sessionId = sid, rawUserText = text)
                     } else if (!online) {
                         val msg = if (lang == SathiLanguage.BN) {
-                            "ইন্টারনেট সংযোগ পাওয়া যাচ্ছে না। অফলাইন চ্যাট ব্যবহার করতে সেটিংস থেকে অফলাইন প্যাক ডাউনলোড করুন অথবা ওয়াই-ফাই/ডাটা চালু করুন।"
+                            "ইন্টারনেট সংযোগ পাওয়া যাচ্ছে না বস। অফলাইন চ্যাট ব্যবহার করতে সেটিংস থেকে অফলাইন প্যাক ডাউনলোড করুন অথবা ওয়াই-ফাই/ডাটা চালু করুন।"
                         } else {
-                            "No internet connection. Enable Wi-Fi/data or download the Offline Pack in Settings."
+                            "No internet connection, Boss. Enable Wi-Fi/data or download the Offline Pack in Settings."
                         }
                         appendSathiErrorReply(msg, lang, voice, speakReply)
                     } else {
                         val offlineTurn = offlineEngine.respondOffline(text, lang, userName)
-                        handleTurnOutput(offlineTurn, emptyList(), isOffline = true, speakReply = speakReply, lang = lang, voice = voice, sessionId = sid)
+                        handleTurnOutput(offlineTurn, emptyList(), isOffline = true, speakReply = speakReply, lang = lang, voice = voice, sessionId = sid, rawUserText = text)
                     }
                     return@launch
                 }
@@ -733,7 +879,7 @@ class SathiViewModel(
                             apiKey = settings.customGeminiApiKey,
                             screenTextContext = screenContext
                         ).getOrElse {
-                            if (lang == SathiLanguage.BN) "স্ক্রিনটি পড়া যায়নি।" else "Could not read screen."
+                            if (lang == SathiLanguage.BN) "স্ক্রিনটি পড়া যায়নি বস।" else "Could not read screen, Boss."
                         }
                         val aiMsg = ChatMessage(
                             id = UUID.randomUUID().toString(),
@@ -750,9 +896,9 @@ class SathiViewModel(
                         return@launch
                     } else if (screenContext.isNotBlank()) {
                         val reply = if (lang == SathiLanguage.BN) {
-                            "বর্তমান স্ক্রিনে যা দেখা যাচ্ছে:\n\n$screenContext"
+                            "বস, বর্তমান স্ক্রিনে যা দেখা যাচ্ছে:\n\n$screenContext"
                         } else {
-                            "Currently visible on your phone screen:\n\n$screenContext"
+                            "Boss, currently visible on your phone screen:\n\n$screenContext"
                         }
                         val aiMsg = ChatMessage(
                             id = UUID.randomUUID().toString(),
@@ -770,13 +916,22 @@ class SathiViewModel(
                     }
                 }
 
-                // Online Companion AI Engine
+                // Online Companion AI Engine (with seamless multimedia screen monitoring context when active)
+                val mmState = SathiScreenReaderService.multimediaState.value
+                val enrichedMessage = if (mmState.isMonitoring &&
+                    screenContext.isNotBlank() &&
+                    !SathiAiService.isExplicitPhoneControl(lowerText)
+                ) {
+                    "$text\n\n[${mmState.appLabel} স্ক্রিনের তথ্য:\n${screenContext.take(700)}]"
+                } else {
+                    text
+                }
                 val allowMemory = (profile?.hasPremiumAccess() == true) || globalConfig.value.longTermMemoryForFree
                 val recentHistory = _messages.value.takeLast(8).map { it.isUser to it.text }
                 val activeEmotion = _selectedUserEmotion.value
 
                 val initialResult = aiService.generateCompanionReply(
-                    userMessage = text,
+                    userMessage = enrichedMessage,
                     language = lang,
                     userName = userName,
                     memories = memories.value,
@@ -784,7 +939,8 @@ class SathiViewModel(
                     webSources = emptyList(),
                     allowLongTermMemory = allowMemory,
                     apiKey = settings.customGeminiApiKey,
-                    userEmotion = activeEmotion
+                    userEmotion = activeEmotion,
+                    customSystemPrompt = settings.customSystemPrompt
                 )
 
                 val turn = initialResult.getOrElse { err ->
@@ -807,25 +963,27 @@ class SathiViewModel(
                             webSources = sources,
                             allowLongTermMemory = allowMemory,
                             apiKey = settings.customGeminiApiKey,
-                            userEmotion = activeEmotion
+                            userEmotion = activeEmotion,
+                            customSystemPrompt = settings.customSystemPrompt
                         ).getOrElse { turn }
-                        handleTurnOutput(groundedResult, sources, isOffline = false, speakReply = speakReply, lang = lang, voice = voice, sessionId = sid)
+                        handleTurnOutput(groundedResult, sources, isOffline = false, speakReply = speakReply, lang = lang, voice = voice, sessionId = sid, rawUserText = text)
                     } else {
                         val fallbackTurn = turn.copy(
                             replyText = if (lang == SathiLanguage.BN) {
-                                "দুঃখিত, এই বিষয়ে ইন্টারনেটে সঠিক তথ্য পাওয়া যায়নি। নির্দিষ্ট বিষয় বা শহরের নাম লিখে আবার চেষ্টা করুন।"
+                                "দুঃখিত বস, এই বিষয়ে ইন্টারনেটে সঠিক তথ্য পাওয়া যায়নি। নির্দিষ্ট বিষয় বা শহরের নাম লিখে আবার চেষ্টা করুন।"
                             } else {
-                                "Sorry, I couldn't find reliable online results for that. Please try with a more specific topic."
+                                "Sorry Boss, I couldn't find reliable online results for that. Please try with a more specific topic."
                             },
                             actionType = PhoneActionType.NONE
                         )
-                        handleTurnOutput(fallbackTurn, emptyList(), isOffline = false, speakReply = speakReply, lang = lang, voice = voice, sessionId = sid)
+                        handleTurnOutput(fallbackTurn, emptyList(), isOffline = false, speakReply = speakReply, lang = lang, voice = voice, sessionId = sid, rawUserText = text)
                     }
                 } else {
-                    handleTurnOutput(turn, turn.groundedSources, isOffline = false, speakReply = speakReply, lang = lang, voice = voice, sessionId = sid)
+                    handleTurnOutput(turn, turn.groundedSources, isOffline = false, speakReply = speakReply, lang = lang, voice = voice, sessionId = sid, rawUserText = text)
                 }
             } finally {
                 _isThinking.value = false
+                ensureLiveLoopResumesIfNeeded(speakReply)
             }
         }
     }
@@ -837,7 +995,8 @@ class SathiViewModel(
         speakReply: Boolean,
         lang: SathiLanguage,
         voice: SathiVoiceProfile,
-        sessionId: String
+        sessionId: String,
+        rawUserText: String = ""
     ) {
         _activeMood.value = turn.mood
 
@@ -867,7 +1026,7 @@ class SathiViewModel(
                 _generatedImagePreview.value = outcome
                 generatedThumbnail = outcome.bitmap
                 generatedBadge = if (lang == SathiLanguage.BN) {
-                    if (outcome.isPlaceholderPreview) "নমুনা প্রিভিউ • ডাউনলোডযোগ্য" else "সাথী এআই (Sathi AI) • তৈরি ছবি"
+                    if (outcome.isPlaceholderPreview) "নমুনা প্রিভিউ • ডাউনলোডযোগ্য" else "Sathi AI • তৈরি ছবি"
                 } else {
                     if (outcome.isPlaceholderPreview) "Sample Preview • Downloadable" else "Sathi AI • Generated Image"
                 }
@@ -875,9 +1034,44 @@ class SathiViewModel(
                 finalReplyText = outcome.caption
             }
         } else if (turn.actionType != PhoneActionType.NONE && turn.actionType != PhoneActionType.WEB_SEARCH) {
-            when (val outcome = deviceActions.executeAction(turn.actionType, turn.actionParam, turn.secondaryParam, lang, turn.recipientParam)) {
+            val autoExec = localSettings.value.autoExecuteActions
+            val outcome = when {
+                autoExec && turn.actionType == PhoneActionType.SOCIAL_MESSAGE_CONFIRM -> {
+                    deviceActions.executeConfirmedSocialMessage(
+                        platform = turn.actionParam,
+                        messageBody = turn.secondaryParam,
+                        language = lang,
+                        recipientName = turn.recipientParam,
+                        sendAfterType = turn.secondaryParam.isNotBlank() || SathiAiService.wantsImmediateSend(rawUserText)
+                    )
+                }
+                autoExec && turn.actionType == PhoneActionType.SMS_CONFIRM &&
+                    (turn.actionParam.isNotBlank() || turn.recipientParam.isNotBlank()) &&
+                    turn.secondaryParam.isNotBlank() -> {
+                    deviceActions.executeConfirmedSms(
+                        target = turn.actionParam,
+                        body = turn.secondaryParam,
+                        language = lang,
+                        recipientName = turn.recipientParam
+                    )
+                }
+                else -> deviceActions.executeAction(
+                    type = turn.actionType,
+                    param = turn.actionParam,
+                    secondary = turn.secondaryParam,
+                    language = lang,
+                    recipient = turn.recipientParam
+                )
+            }
+            when (outcome) {
                 is ActionOutcome.Executed -> {
                     if (outcome.label.isNotBlank()) actionLabel = outcome.label
+                    if (turn.actionType == PhoneActionType.OPEN_APP ||
+                        turn.actionType == PhoneActionType.YOUTUBE ||
+                        turn.actionType == PhoneActionType.SOCIAL_MESSAGE_CONFIRM
+                    ) {
+                        ensureFloatingOrbStartedForExternalApp()
+                    }
                 }
                 is ActionOutcome.NeedsConfirmation -> {
                     _pendingConfirmation.value = outcome.confirmation
@@ -1042,7 +1236,12 @@ class SathiViewModel(
 
         val outcome = when (pending.type) {
             PhoneActionType.CALL_CONFIRM -> deviceActions.executeConfirmedCall(resolvedTarget, lang)
-            PhoneActionType.SMS_CONFIRM -> deviceActions.executeConfirmedSms(resolvedTarget, resolvedMessage, lang)
+            PhoneActionType.SMS_CONFIRM -> deviceActions.executeConfirmedSms(
+                target = resolvedTarget,
+                body = resolvedMessage,
+                language = lang,
+                recipientName = resolvedRecipient
+            )
             PhoneActionType.SOCIAL_MESSAGE_CONFIRM -> deviceActions.executeConfirmedSocialMessage(
                 platform = pending.extraParam.ifBlank { resolvedTarget },
                 messageBody = resolvedMessage,

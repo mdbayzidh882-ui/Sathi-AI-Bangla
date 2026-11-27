@@ -93,7 +93,8 @@ enum class PhoneActionType {
     CALL_CONFIRM,
     SMS_CONFIRM,
     SOCIAL_MESSAGE_CONFIRM,
-    GENERATE_IMAGE
+    GENERATE_IMAGE,
+    SCREEN_UI_ACTION
 }
 
 enum class MemoryCategory(val code: String, val labelBn: String, val labelEn: String) {

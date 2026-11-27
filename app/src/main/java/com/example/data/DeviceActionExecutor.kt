@@ -70,6 +70,22 @@ class DeviceActionExecutor(context: Context) {
                     recipientName = recipient
                 )
             )
+            PhoneActionType.SCREEN_UI_ACTION -> {
+                val ok = SathiScreenReaderService.performDirectScreenCommand(param, secondary)
+                if (ok) {
+                    ActionOutcome.Executed(
+                        if (language == SathiLanguage.BN) "স্ক্রিন কমান্ড সম্পন্ন হয়েছে ($param)" else "Executed screen action ($param)"
+                    )
+                } else {
+                    ActionOutcome.Failed(
+                        if (language == SathiLanguage.BN) {
+                            "স্ক্রিনে '$param' বাটন বা লেখার বক্স খুঁজে পাওয়া যায়নি (সেটিংস থেকে স্ক্রিন রিডার চালু রাখুন)।"
+                        } else {
+                            "Could not find '$param' on screen. Enable Screen Data Reader in Settings."
+                        }
+                    )
+                }
+            }
         }
     }
 
@@ -91,9 +107,14 @@ class DeviceActionExecutor(context: Context) {
         }
     }
 
-    fun executeConfirmedSms(target: String, body: String, language: SathiLanguage): ActionOutcome {
+    fun executeConfirmedSms(
+        target: String,
+        body: String,
+        language: SathiLanguage,
+        recipientName: String = ""
+    ): ActionOutcome {
         return try {
-            val cleaned = resolvePhoneDigits(target)
+            val cleaned = resolvePhoneDigits(target.ifBlank { recipientName })
             val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:$cleaned")).apply {
                 putExtra("sms_body", body)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -113,7 +134,8 @@ class DeviceActionExecutor(context: Context) {
         platform: String,
         messageBody: String,
         language: SathiLanguage,
-        recipientName: String = ""
+        recipientName: String = "",
+        sendAfterType: Boolean = false
     ): ActionOutcome {
         val lower = platform.lowercase()
         val textToSend = messageBody.trim()
@@ -146,12 +168,13 @@ class DeviceActionExecutor(context: Context) {
             else -> listOf("com.whatsapp", "com.facebook.orca")
         }
 
-        // Stage Accessibility two-step friend search + compose-box write
+        // Stage Accessibility two-step friend search + compose-box write (+ optional Send click)
         SathiScreenReaderService.stagePendingSocialFlow(
             targetPackages = targetPackages,
             recipientName = resolvedNameOrQuery,
             transliteratedRecipient = translitRecipient,
-            messageText = textToSend
+            messageText = textToSend,
+            sendAfterType = sendAfterType
         )
 
         val pm = appContext.packageManager

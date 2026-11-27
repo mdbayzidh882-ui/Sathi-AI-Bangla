@@ -3,8 +3,10 @@ package com.example
 import android.content.Context
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.OfflineCompanionEngine
@@ -41,12 +43,14 @@ class ExampleRobolectricTest {
     @Test
     fun `app opens directly on home screen with Sathi AI title, top quick questions, drawer, new chat, mic, auto-voice toggle, emotion bar, media plus button, and no ad section`() {
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithText("সাথী এআই • Sathi AI").assertIsDisplayed()
+        composeTestRule.onAllNodesWithText("Sathi AI")[0].assertIsDisplayed()
+        composeTestRule.onNodeWithTag("top_admin_key_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("top_quick_questions_row").assertIsDisplayed()
         composeTestRule.onNodeWithTag("drawer_menu_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("new_chat_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("theme_toggle_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("center_ai_logo").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("orb_top_wave_animation").assertIsDisplayed()
         composeTestRule.onNodeWithTag("emotion_chip_sad").assertIsDisplayed()
         composeTestRule.onNodeWithTag("mic_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("auto_voice_toggle_button").assertIsDisplayed()
@@ -58,7 +62,7 @@ class ExampleRobolectricTest {
     fun `app name is Sathi AI`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val appName = context.getString(R.string.app_name)
-        assertEquals("সাথী এআই", appName)
+        assertEquals("Sathi AI", appName)
     }
 
     @Test
@@ -620,5 +624,222 @@ class ExampleRobolectricTest {
         assertTrue(com.example.data.DeviceActionExecutor.matchesContactName("Tanvir Hasan", "তানভীর"))
         assertTrue(com.example.data.DeviceActionExecutor.matchesContactName("Karim Ahmed", "করিম"))
         assertFalse(com.example.data.DeviceActionExecutor.matchesContactName("Jahidul Islam", "রহিম"))
+    }
+
+    @Test
+    fun `boss persona, how-to sms guard, screen ui actions, game mode detection, and prompt preferences work`() = runBlocking {
+        val ai = SathiAiService()
+        val offline = OfflineCompanionEngine()
+
+        // 1. Boss ("বস") persona in greetings & barge-in stop
+        val greet = ai.generateCompanionReply("হ্যালো", SathiLanguage.BN, "বাইজিদ", emptyList(), emptyList()).getOrThrow()
+        assertTrue(greet.replyText.contains("বস"))
+        val stopTurn = ai.generateCompanionReply("থামো", SathiLanguage.BN, "বাইজিদ", emptyList(), emptyList()).getOrThrow()
+        assertTrue(stopTurn.replyText.contains("বস"))
+        val offGreet = offline.respondOffline("সালাম", SathiLanguage.BN, "বাইজিদ")
+        assertTrue(offGreet.replyText.contains("বস"))
+
+        // 2. How-to SMS question must NOT trigger SMS_CONFIRM
+        val howToSms = ai.generateCompanionReply("কিভাবে এসএমএস করব", SathiLanguage.BN, "বাইজিদ", emptyList(), emptyList()).getOrThrow()
+        assertNotEquals(PhoneActionType.SMS_CONFIRM, howToSms.actionType)
+        assertNotEquals(PhoneActionType.CALL_CONFIRM, howToSms.actionType)
+
+        // 3. On-screen voice commands (Next, Title, Publish)
+        val nextCmd = ai.generateCompanionReply("নেক্সট", SathiLanguage.BN, "বাইজিদ", emptyList(), emptyList()).getOrThrow()
+        assertEquals(PhoneActionType.SCREEN_UI_ACTION, nextCmd.actionType)
+        assertEquals("next", nextCmd.actionParam)
+
+        val titleCmd = ai.generateCompanionReply("টাইটেল লেখো বাংলা টিউটোরিয়াল", SathiLanguage.BN, "বাইজিদ", emptyList(), emptyList()).getOrThrow()
+        assertEquals(PhoneActionType.SCREEN_UI_ACTION, titleCmd.actionType)
+        assertEquals("type", titleCmd.actionParam)
+        assertEquals("বাংলা টিউটোরিয়াল", titleCmd.secondaryParam)
+
+        val publishCmd = offline.respondOffline("পাবলিশ করো", SathiLanguage.BN, "বাইজিদ")
+        assertEquals(PhoneActionType.SCREEN_UI_ACTION, publishCmd.actionType)
+        assertEquals("publish", publishCmd.actionParam)
+
+        // 4. Game Mode detection
+        assertTrue(com.example.overlay.SathiScreenReaderService.isKnownGamePackage("com.dts.freefireth"))
+        assertTrue(com.example.overlay.SathiScreenReaderService.isKnownGamePackage("com.pubg.imobile"))
+        assertFalse(com.example.overlay.SathiScreenReaderService.isKnownGamePackage("com.whatsapp"))
+
+        // 5. Preferences autoExecuteActions & customSystemPrompt
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = com.example.core.SathiPreferences(context)
+        assertTrue(prefs.settingsFlow.first().autoExecuteActions)
+        prefs.setAutoExecuteActions(false)
+        assertFalse(prefs.settingsFlow.first().autoExecuteActions)
+        prefs.setAutoExecuteActions(true)
+
+        prefs.saveCustomSystemPrompt("তুমি বসকে দ্রুত উত্তর দাও।")
+        assertEquals("তুমি বসকে দ্রুত উত্তর দাও।", prefs.settingsFlow.first().customSystemPrompt)
+        prefs.saveCustomSystemPrompt("")
+        val defaultPrompt = prefs.settingsFlow.first().customSystemPrompt
+        assertEquals(com.example.core.SathiPreferences.DEFAULT_BOSS_SYSTEM_PROMPT, defaultPrompt)
+        assertTrue(defaultPrompt.contains("Sathi AI System Prompt"))
+        assertTrue(defaultPrompt.contains("Identity & Role"))
+        assertTrue(defaultPrompt.contains("Mohammad Bayzid Hasan"))
+        assertTrue(defaultPrompt.contains("Automated Messaging"))
+        assertTrue(defaultPrompt.contains("Game Mode & Multimedia"))
+        assertTrue(defaultPrompt.contains("Incoming Call & Message Handling"))
+        assertTrue(defaultPrompt.contains("Accuracy & Interface"))
+    }
+
+    @Test
+    fun `incoming call and message dialogue, boss summary extraction, multimedia monitor, and directed messaging work`() = runBlocking {
+        // 1. IncomingCommunicationManager: incoming message -> polite Bengali dialogue -> core inquiry summary + Boss briefing
+        com.example.comm.IncomingCommunicationManager.clearSummaries()
+        val msgRecord = com.example.comm.IncomingCommunicationManager.recordQuickIncomingSync(
+            type = com.example.comm.IncomingCommType.MESSAGE,
+            appName = "WhatsApp",
+            packageName = "com.whatsapp",
+            sender = "রহিম",
+            incomingText = "ভাই জরুরি বিকাশে ৫০০০ টাকা পাঠাতে হবে, এখনই কথা বলো"
+        )
+        assertTrue(msgRecord != null)
+        assertTrue(msgRecord!!.sathiDialogueReply.contains("সাথী"))
+        assertTrue(msgRecord.coreInquirySummary.contains("রহিম"))
+        assertTrue(msgRecord.coreInquirySummary.contains("আর্থিক") || msgRecord.coreInquirySummary.contains("টাকা"))
+        val bossBriefing = com.example.comm.IncomingCommunicationManager.formatBossVoiceBriefing(msgRecord)
+        assertTrue(bossBriefing.startsWith("বস,"))
+
+        // Self-echo loop prevention
+        com.example.comm.IncomingCommunicationManager.markBotReplySent(msgRecord.sathiDialogueReply)
+        assertTrue(com.example.comm.IncomingCommunicationManager.isSelfEchoReply(msgRecord.sathiDialogueReply))
+        assertEquals(
+            null,
+            com.example.comm.IncomingCommunicationManager.recordQuickIncomingSync(
+                type = com.example.comm.IncomingCommType.MESSAGE,
+                appName = "WhatsApp",
+                packageName = "com.whatsapp",
+                sender = "রহিম",
+                incomingText = msgRecord.sathiDialogueReply
+            )
+        )
+
+        // Incoming call summary
+        val callRecord = com.example.comm.IncomingCommunicationManager.recordQuickIncomingSync(
+            type = com.example.comm.IncomingCommType.CALL,
+            appName = "Phone",
+            packageName = "com.google.android.dialer",
+            sender = "করিম",
+            incomingText = ""
+        )
+        assertTrue(callRecord != null)
+        assertTrue(callRecord!!.sathiDialogueReply.contains("আসসালামু আলাইকুম"))
+        assertTrue(callRecord.coreInquirySummary.contains("করিম"))
+
+        // 2. Multimedia app classification (YouTube, Facebook, Messenger) & expanded games
+        assertEquals(
+            com.example.overlay.MultimediaAppType.YOUTUBE,
+            com.example.overlay.SathiScreenReaderService.classifyMultimediaPackage("com.google.android.youtube")
+        )
+        assertEquals(
+            com.example.overlay.MultimediaAppType.FACEBOOK,
+            com.example.overlay.SathiScreenReaderService.classifyMultimediaPackage("com.facebook.katana")
+        )
+        assertEquals(
+            com.example.overlay.MultimediaAppType.MESSENGER,
+            com.example.overlay.SathiScreenReaderService.classifyMultimediaPackage("com.facebook.orca")
+        )
+        assertEquals(
+            null,
+            com.example.overlay.SathiScreenReaderService.classifyMultimediaPackage("com.dts.freefireth")
+        )
+        assertTrue(com.example.overlay.SathiScreenReaderService.isKnownGamePackage("jp.konami.pesam"))
+        assertTrue(com.example.overlay.SathiScreenReaderService.isKnownGamePackage("com.garena.game.delta"))
+
+        // 3. Directed Bengali messaging without confirmation word ("করিমকে হোয়াটসঅ্যাপে বলো আমি আসছি") & non-hijacked "আমাকে বলো"
+        val ai = SathiAiService()
+        val directedMsg = ai.generateCompanionReply(
+            userMessage = "করিমকে হোয়াটসঅ্যাপে বলো আমি আসছি",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertEquals(PhoneActionType.SOCIAL_MESSAGE_CONFIRM, directedMsg.actionType)
+        assertEquals("WhatsApp", directedMsg.actionParam)
+        assertEquals("করিম", directedMsg.recipientParam)
+        assertTrue(directedMsg.secondaryParam.contains("আমি আসছি"))
+
+        val selfQuestion = ai.generateCompanionReply(
+            userMessage = "আমাকে বলো বাংলাদেশের জাতীয় ফল কী?",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertNotEquals(PhoneActionType.SOCIAL_MESSAGE_CONFIRM, selfQuestion.actionType)
+
+        // 4. Preferences autoHandleIncomingComms toggle
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = com.example.core.SathiPreferences(context)
+        assertTrue(prefs.settingsFlow.first().autoHandleIncomingComms)
+        prefs.setAutoHandleIncomingComms(false)
+        assertFalse(prefs.settingsFlow.first().autoHandleIncomingComms)
+        prefs.setAutoHandleIncomingComms(true)
+        com.example.comm.IncomingCommunicationManager.clearSummaries()
+    }
+
+    @Test
+    fun `look and feel preferences, 27 orb styles, animation modes, themes, and navigation work cleanly`() = runBlocking {
+        // 1. Validate full Look & feel enum sets match expected choices
+        assertEquals(27, com.example.core.SathiOrbStyle.entries.size)
+        assertEquals(4, com.example.core.SathiAnimationStyle.entries.size)
+        assertEquals(7, com.example.core.SathiColorTheme.entries.size)
+
+        // 2. Validate DataStore persistence for all Look & feel settings
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = com.example.core.SathiPreferences(context)
+
+        prefs.setOrbStyle(com.example.core.SathiOrbStyle.PLASMA_RING)
+        prefs.setStartEndSoundsEnabled(true)
+        prefs.setReduceMotion(true)
+        prefs.setBatterySaver(true)
+        prefs.setAnimationStyle(com.example.core.SathiAnimationStyle.BOUNCY)
+        prefs.setColorTheme(com.example.core.SathiColorTheme.OCEAN)
+
+        val saved = prefs.settingsFlow.first()
+        assertEquals(com.example.core.SathiOrbStyle.PLASMA_RING, saved.orbStyle)
+        assertTrue(saved.startEndSoundsEnabled)
+        assertTrue(saved.reduceMotion)
+        assertTrue(saved.batterySaver)
+        assertEquals(com.example.core.SathiAnimationStyle.BOUNCY, saved.animationStyle)
+        assertEquals(com.example.core.SathiColorTheme.OCEAN, saved.colorTheme)
+        assertEquals(com.example.core.SathiThemeMode.NIGHT, saved.themeMode)
+
+        // Reset back to crisp defaults cleanly
+        prefs.setOrbStyle(com.example.core.SathiOrbStyle.ORBIT_BLUE)
+        prefs.setStartEndSoundsEnabled(false)
+        prefs.setReduceMotion(false)
+        prefs.setBatterySaver(false)
+        prefs.setAnimationStyle(com.example.core.SathiAnimationStyle.SMOOTH)
+        prefs.setColorTheme(com.example.core.SathiColorTheme.GOLDEN_DAY)
+        assertEquals(com.example.core.SathiThemeMode.DAY, prefs.settingsFlow.first().themeMode)
+
+        // 3. UI flow: Home -> Settings -> Look & feel -> Orb style picker
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("সেটিংস").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("open_look_and_feel_button").assertIsDisplayed().performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("look_and_feel_screen").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("start_end_sounds_switch").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("reduce_motion_switch").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("animations_picker_row").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("theme_picker_row").assertIsDisplayed()
+
+        composeTestRule.onNodeWithTag("open_orb_style_picker_button").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("orb_style_picker_screen").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("orb_live_preview_canvas").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("orb_preview_state_idle").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("orb_preview_state_listening").performClick()
+        composeTestRule.onNodeWithTag("orb_preview_state_thinking").performClick()
+        composeTestRule.onNodeWithTag("orb_preview_state_speaking").performClick()
+        composeTestRule.onNodeWithTag("orb_style_card_orbit_blue").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("orb_style_card_nebula").assertIsDisplayed().performClick()
+        composeTestRule.waitForIdle()
     }
 }

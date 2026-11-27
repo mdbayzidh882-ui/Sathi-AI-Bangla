@@ -9,11 +9,15 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -24,8 +28,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.BatterySaver
 import androidx.compose.material.icons.filled.BubbleChart
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.ContentPaste
@@ -33,11 +39,13 @@ import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Policy
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -49,6 +57,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -77,8 +86,10 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.comm.SathiNotificationListenerService
 import com.example.core.OfflinePackState
 import com.example.core.OfflinePackTier
+import com.example.core.SathiPreferences
 import com.example.core.SathiThemeMode
 import com.example.data.SathiAiService
 import com.example.model.PlanTier
@@ -95,6 +106,7 @@ import com.example.ui.theme.SathiSpeakingOrbTeal
 fun SettingsAndPlanScreen(
     viewModel: SathiViewModel,
     onOpenAdminPanel: () -> Unit,
+    initialOpenLookAndFeel: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -109,6 +121,8 @@ fun SettingsAndPlanScreen(
     val floatingRunning by SathiFloatingService.isRunning.collectAsStateWithLifecycle()
     val wakeRunning by SathiWakeWordService.isRunning.collectAsStateWithLifecycle()
     val screenReaderActive by SathiScreenReaderService.isConnected.collectAsStateWithLifecycle()
+    val incomingSummaries by viewModel.incomingSummaries.collectAsStateWithLifecycle()
+    val notifListenerConnected by SathiNotificationListenerService.isConnected.collectAsStateWithLifecycle()
 
     val language = SathiLanguage.fromCode(profile?.preferredLanguage)
     val voice = SathiVoiceProfile.fromCode(profile?.preferredVoice)
@@ -121,9 +135,33 @@ fun SettingsAndPlanScreen(
     var keyPasteNotice by remember { mutableStateOf<String?>(null) }
     var codeInput by remember { mutableStateOf("") }
     var customTopicInput by remember { mutableStateOf("") }
+    var systemPromptInput by remember(localSettings.customSystemPrompt) {
+        mutableStateOf(localSettings.customSystemPrompt)
+    }
     var showPrivacyDialog by remember { mutableStateOf(false) }
     var showOverlayDialog by remember { mutableStateOf(false) }
     var showAccessibilityDialog by remember { mutableStateOf(false) }
+    var showLookAndFeel by remember(initialOpenLookAndFeel) { mutableStateOf(initialOpenLookAndFeel) }
+    var openOrbPickerDirectly by remember { mutableStateOf(false) }
+
+    if (showLookAndFeel) {
+        LookAndFeelScreen(
+            localSettings = localSettings,
+            language = language,
+            onSelectOrbStyle = { viewModel.setOrbStyle(it) },
+            onToggleStartEndSounds = { viewModel.setStartEndSoundsEnabled(it) },
+            onToggleReduceMotion = { viewModel.setReduceMotion(it) },
+            onSelectAnimationStyle = { viewModel.setAnimationStyle(it) },
+            onSelectColorTheme = { viewModel.setColorTheme(it) },
+            onBack = {
+                showLookAndFeel = false
+                openOrbPickerDirectly = false
+            },
+            initialOpenOrbPicker = openOrbPickerDirectly,
+            modifier = modifier
+        )
+        return
+    }
 
     LaunchedEffect(localSettings.customGeminiApiKey) {
         if (localSettings.customGeminiApiKey.isNotBlank() && geminiKeyInput.isBlank()) {
@@ -274,16 +312,165 @@ fun SettingsAndPlanScreen(
             )
         }
 
-        // 0. Day / Night Color Setup
+        // 0. Appearance & Language (Look & feel, Orb style, Theme, Battery saver)
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
                 shape = MaterialTheme.shapes.large
             ) {
                 Column(
                     modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
+                    Text(
+                        text = if (language == SathiLanguage.BN) "থিম ও লুক (Appearance & language)" else "Appearance & language",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    // Look & feel entry row
+                    Surface(
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+                        shape = RoundedCornerShape(18.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 60.dp)
+                            .testTag("open_look_and_feel_button")
+                            .clickable {
+                                openOrbPickerDirectly = false
+                                showLookAndFeel = true
+                            }
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Palette,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (language == SathiLanguage.BN) "লুক ও থিমস (Look & feel)" else "Look & feel",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = if (language == SathiLanguage.BN) {
+                                        "অর্ব স্টাইল, মোশন, অ্যানিমেশন, থিম"
+                                    } else {
+                                        "Orb style, motion, theme"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Surface(
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                shape = RoundedCornerShape(50)
+                            ) {
+                                Text(
+                                    text = if (language == SathiLanguage.BN) localSettings.orbStyle.titleBn else localSettings.orbStyle.titleEn,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    // Language quick row
+                    Surface(
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.56f),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 56.dp)
+                            .clickable {
+                                val nextLang = if (language == SathiLanguage.BN) SathiLanguage.EN else SathiLanguage.BN
+                                viewModel.updateLanguageAndVoice(nextLang, voice, nameInput)
+                            }
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Translate, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (language == SathiLanguage.BN) "ভাষা (Language)" else "Language",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = if (language == SathiLanguage.BN) "অ্যাপ ও কথোপকথনের ভাষা" else "App language",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Surface(
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                shape = RoundedCornerShape(50)
+                            ) {
+                                Text(
+                                    text = if (language == SathiLanguage.BN) "বাংলা" else "English",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    // Battery saver toggle
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 52.dp)
+                            .clickable { viewModel.setBatterySaver(!localSettings.batterySaver) },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.BatterySaver, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary)
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (language == SathiLanguage.BN) "ব্যাটারি সেভার (Battery saver)" else "Battery saver",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = if (language == SathiLanguage.BN) {
+                                    "চার্জ বাঁচাতে অ্যানিমেশন শান্ত রাখুন"
+                                } else {
+                                    "Calmer animations to save power"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = localSettings.batterySaver,
+                            onCheckedChange = { viewModel.setBatterySaver(it) },
+                            modifier = Modifier.testTag("battery_saver_switch")
+                        )
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
                             imageVector = if (localSettings.themeMode == SathiThemeMode.NIGHT) Icons.Default.DarkMode else Icons.Default.LightMode,
@@ -292,20 +479,11 @@ fun SettingsAndPlanScreen(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = if (language == SathiLanguage.BN) "দিনের ও রাতের কালার সেটআপ" else "Day & Night Color Theme",
-                            style = MaterialTheme.typography.titleMedium,
+                            text = if (language == SathiLanguage.BN) "দ্রুত দিন / রাত ও থিম" else "Quick Day / Night & Theme",
+                            style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.Bold
                         )
                     }
-                    Text(
-                        text = if (language == SathiLanguage.BN) {
-                            "দিনের বেলায় পরিষ্কার সাদা ও হলুদ থিম এবং রাতের বেলায় চোখের আরামদায়ক ডার্ক থিম বেছে নিন।"
-                        } else {
-                            "Choose crisp White & Golden Day mode or comfortable Dark Night mode."
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         SathiThemeMode.entries.forEach { mode ->
                             FilterChip(
@@ -421,7 +599,10 @@ fun SettingsAndPlanScreen(
                                     }
                                 },
                                 orbSize = 58.dp,
-                                buttonTestTag = "settings_voice_chat_orb"
+                                buttonTestTag = "settings_voice_chat_orb",
+                                orbStyle = localSettings.orbStyle,
+                                reduceMotion = localSettings.reduceMotion || localSettings.batterySaver,
+                                animationStyle = localSettings.animationStyle
                             )
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
@@ -595,6 +776,116 @@ fun SettingsAndPlanScreen(
                     }
                 }
             }
+        }
+
+        // 2a-2. Boss Mode: Direct Auto-Execution & Editable System Prompt
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                shape = MaterialTheme.shapes.large
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (language == SathiLanguage.BN) {
+                                "অটো অ্যাকশন ও এআই আচরণ (বস মোড)"
+                            } else {
+                                "Auto Actions & AI System Prompt"
+                            },
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (language == SathiLanguage.BN) {
+                                    "অটো WhatsApp / Messenger ও অ্যাকশন"
+                                } else {
+                                    "Auto WhatsApp / Messenger Execution"
+                                },
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = if (language == SathiLanguage.BN) {
+                                    "চালু থাকলে পপআপ ছাড়াই সরাসরি অ্যাপ ওপেন ও মেসেজ টাইপ হবে"
+                                } else {
+                                    "Directly opens & executes social messages without confirmation popup"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = localSettings.autoExecuteActions,
+                            onCheckedChange = { viewModel.setAutoExecuteActions(it) },
+                            modifier = Modifier.testTag("auto_execute_actions_switch")
+                        )
+                    }
+
+                    OutlinedTextField(
+                        value = systemPromptInput,
+                        onValueChange = { systemPromptInput = it },
+                        label = {
+                            Text(
+                                if (language == SathiLanguage.BN) "Sathi AI সিস্টেম প্রম্পট (System Prompt)"
+                                else "Sathi AI System Prompt"
+                            )
+                        },
+                        minLines = 3,
+                        maxLines = 5,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("settings_system_prompt_input")
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                systemPromptInput = SathiPreferences.DEFAULT_BOSS_SYSTEM_PROMPT
+                                viewModel.saveCustomSystemPrompt(SathiPreferences.DEFAULT_BOSS_SYSTEM_PROMPT)
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(if (language == SathiLanguage.BN) "ডিফল্ট রিসেট" else "Reset Default")
+                        }
+                        Button(
+                            onClick = { viewModel.saveCustomSystemPrompt(systemPromptInput) },
+                            modifier = Modifier
+                                .weight(1.2f)
+                                .testTag("settings_save_prompt_button")
+                        ) {
+                            Text(if (language == SathiLanguage.BN) "সংরক্ষণ" else "Save")
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2a-3. Incoming Call & Message Handling Assistant + Boss Summaries
+        item {
+            IncomingCommAssistantCard(
+                autoHandleEnabled = localSettings.autoHandleIncomingComms,
+                listenerConnected = notifListenerConnected,
+                summaries = incomingSummaries,
+                language = language,
+                onToggleAutoHandle = { viewModel.setAutoHandleIncomingComms(it) },
+                onClearSummaries = { viewModel.clearIncomingSummaries() }
+            )
         }
 
         // 2b. Optional Gemini Cloud AI Key (Zero-Setup works without it; paste key for full Google Search + Vision)

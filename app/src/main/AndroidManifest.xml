@@ -118,6 +118,16 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/sathi_accessibility_config" />
         </service>
+
+        <service
+            android:name=".comm.SathiNotificationListenerService"
+            android:exported="true"
+            android:label="Sathi Incoming Assistant"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
     </application>
 
 </manifest>

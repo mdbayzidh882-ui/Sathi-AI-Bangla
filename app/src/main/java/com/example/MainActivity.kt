@@ -39,11 +39,13 @@ class MainActivity : ComponentActivity() {
                 SathiThemeMode.NIGHT -> true
                 SathiThemeMode.SYSTEM -> isSystemInDarkTheme()
             }
-            SathiTheme(darkTheme = isNightTheme) {
+            val effectiveDark = isNightTheme || settings.colorTheme.isDarkPalette
+            SathiTheme(darkTheme = effectiveDark, colorTheme = settings.colorTheme) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     SathiAppNavigation(
                         wakeTriggerTick = wakeTriggerTick,
-                        isDarkTheme = isNightTheme
+                        isDarkTheme = effectiveDark,
+                        colorTheme = settings.colorTheme
                     )
                 }
             }

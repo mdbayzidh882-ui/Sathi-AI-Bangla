@@ -22,9 +22,9 @@ class OfflineCompanionEngine(
 
         if (lower.startsWith("থামো") || lower == "থাম" || lower.startsWith("stop")) {
             val reply = if (language == SathiLanguage.BN) {
-                "জি, আমি থেমে গেলাম $userName! বলুন এখন কী শুনতে বা করতে চান?"
+                "জি বস, আমি থেমে গেলাম! বলুন এখন কী শুনতে বা করতে চান?"
             } else {
-                "Okay, I stopped! What would you like me to do next?"
+                "Okay Boss, I stopped! What would you like me to do next?"
             }
             return turn(reply, SathiMood.WARM)
         }
@@ -95,6 +95,11 @@ class OfflineCompanionEngine(
                 "Creating a sample preview image for \"$imgPrompt\"..."
             }
             return turn(reply, SathiMood.HAPPY, PhoneActionType.GENERATE_IMAGE, imgPrompt)
+        }
+
+        // 5b. Direct on-screen UI commands offline (Send, Next, Publish, Write Title)
+        SathiAiService.detectScreenUiCommand(text, lower, language)?.let { screenTurn ->
+            return screenTurn
         }
 
         // 6. Social Apps & Friend WhatsApp/Messenger Search / SMS / Comment / Reply offline
@@ -189,12 +194,14 @@ class OfflineCompanionEngine(
             return turn(reply, SathiMood.WARM, PhoneActionType.SET_TIMER, seconds.toString(), "Sathi Timer")
         }
 
-        if (lower.startsWith("call ") || lower.contains("কল কর") || lower.contains("ফোন কর")) {
+        val isHowToQuestion = lower.contains("কীভাবে") || lower.contains("কিভাবে") ||
+            lower.contains("কেমনে") || lower.contains("how to ")
+        if (!isHowToQuestion && (lower.startsWith("call ") || lower.contains("কল কর") || lower.contains("ফোন কর"))) {
             val digits = Regex("(\\+?\\d[\\d\\s-]{4,})").find(text)?.value?.trim() ?: ""
             val reply = if (language == SathiLanguage.BN) {
-                "অফলাইন কল করার আগে আপনার অনুমতি নিচ্ছি। নিচের বক্সে নিশ্চিত করুন।"
+                "জি বস, অফলাইন কল করার আগে ডায়ালার প্রস্তুত করছি।"
             } else {
-                "Please confirm below before I open the dialer offline."
+                "Boss, preparing the phone dialer offline."
             }
             return turn(reply, SathiMood.WARM, PhoneActionType.CALL_CONFIRM, digits)
         }
@@ -234,9 +241,9 @@ class OfflineCompanionEngine(
                 lower.contains("সালাম") || lower.contains("আসসালামু") || lower.contains("কেমন আছ") || lower.contains("good morning"))
         ) {
             val reply = if (language == SathiLanguage.BN) {
-                "আসসালামু আলাইকুম $userName! আমি আপনার অফলাইন সাথী। আলহামদুলিল্লাহ ভালো আছি — গল্প, কৌতুক, একক রূপান্তর, সাধারণ জ্ঞান বা ফোন কন্ট্রোলের জন্য আমাকে বলুন!"
+                "আসসালামু আলাইকুম বস! আমি আপনার অফলাইন Sathi AI। আলহামদুলিল্লাহ ভালো আছি — গল্প, কৌতুক, একক রূপান্তর, সাধারণ জ্ঞান বা ফোন কন্ট্রোলের জন্য আমাকে বলুন!"
             } else {
-                "Assalamu Alaikum $userName! I am Sathi in offline mode. Ask me for stories, jokes, unit conversions, saved knowledge, or phone actions!"
+                "Assalamu Alaikum Boss! I am Sathi AI in offline mode. Ask me for stories, jokes, unit conversions, saved knowledge, or phone actions!"
             }
             return turn(reply, SathiMood.HAPPY)
         }
@@ -268,14 +275,14 @@ class OfflineCompanionEngine(
 
         // Varied, informative offline replies
         val variedBn = listOf(
-            "আমি মন দিয়ে শুনছি, $userName। অফলাইনে আমাকে গল্প, কবিতা, কৌতুক, একক রূপান্তর (যেমন: ৫ কেজি কত গ্রাম), সাধারণ জ্ঞান বা অ্যালার্ম-ফ্ল্যাশলাইট চালাতে বলতে পারেন।",
-            "দারুণ কথা বলেছেন, $userName! আপনি চাইলে সেটিংস থেকে আপনার পছন্দের যেকোনো বিষয় অফলাইন প্যাকে যুক্ত করতে পারবেন—তাহলে ইন্টারনেট ছাড়াও আমি আরও বেশি বলতে পারব।",
-            "জি $userName, আমি বুঝেছি। আপনার কি একটু মজার গল্প শুনতে ভালো লাগবে, নাকি ডাউনলোড করা তথ্য বা সময় জানতে চান?"
+            "জি বস, আমি মন দিয়ে শুনছি। অফলাইনে আমাকে গল্প, কবিতা, কৌতুক, একক রূপান্তর (যেমন: ৫ কেজি কত গ্রাম), সাধারণ জ্ঞান বা অ্যালার্ম-ফ্ল্যাশলাইট চালাতে বলতে পারেন।",
+            "দারুণ বলেছেন বস! আপনি চাইলে সেটিংস থেকে আপনার পছন্দের যেকোনো বিষয় অফলাইন প্যাকে যুক্ত করতে পারবেন—তাহলে ইন্টারনেট ছাড়াও আমি আরও বেশি বলতে পারব।",
+            "জি বস, আমি বুঝেছি। আপনার কি একটু মজার গল্প শুনতে ভালো লাগবে, নাকি ডাউনলোড করা তথ্য বা সময় জানতে চান?"
         )
         val variedEn = listOf(
-            "I hear you, $userName! Even offline, you can ask for stories, poems, jokes, unit conversions, quick math, alarms, or saved knowledge.",
-            "Thanks for sharing that, $userName. You can add custom topics in Settings -> Offline Pack so I know even more without internet!",
-            "I'm right here beside you offline, $userName. Ask me anything from your downloaded pack or ask for a fresh story!"
+            "I hear you, Boss! Even offline, you can ask for stories, poems, jokes, unit conversions, quick math, alarms, or saved knowledge.",
+            "Thanks for sharing that, Boss. You can add custom topics in Settings -> Offline Pack so I know even more without internet!",
+            "I'm right here beside you offline, Boss. Ask me anything from your downloaded pack or ask for a fresh story!"
         )
         val idx = chatCursor++ % variedBn.size
         val reply = if (language == SathiLanguage.BN) variedBn[idx] else variedEn[idx]

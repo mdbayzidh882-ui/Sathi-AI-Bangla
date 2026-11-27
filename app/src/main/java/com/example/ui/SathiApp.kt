@@ -1,12 +1,20 @@
 package com.example.ui
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -40,6 +48,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.example.core.NetworkMonitor
+import com.example.core.SathiAnimationStyle
+import com.example.core.SathiColorTheme
 import com.example.core.SathiPreferences
 import com.example.data.DeviceActionExecutor
 import com.example.data.GeminiRestImageGenRepository
@@ -69,14 +79,16 @@ private enum class SathiDestination(
 @Composable
 fun SathiAppNavigation(
     wakeTriggerTick: Int = 0,
-    isDarkTheme: Boolean = false
+    isDarkTheme: Boolean = false,
+    colorTheme: SathiColorTheme = SathiColorTheme.GOLDEN_DAY
 ) {
     SathiMainShell(
         currentUserId = SathiLocalRepository.LOCAL_OWNER_UID,
         userEmail = SathiLocalRepository.OWNER_EMAIL,
         displayName = SathiLocalRepository.OWNER_DEFAULT_NAME,
         wakeTriggerTick = wakeTriggerTick,
-        isDarkTheme = isDarkTheme
+        isDarkTheme = isDarkTheme,
+        colorTheme = colorTheme
     )
 }
 
@@ -86,7 +98,8 @@ private fun SathiMainShell(
     userEmail: String,
     displayName: String,
     wakeTriggerTick: Int,
-    isDarkTheme: Boolean
+    isDarkTheme: Boolean,
+    colorTheme: SathiColorTheme
 ) {
     var lateViewModel by remember { mutableStateOf<SathiViewModel?>(null) }
 
@@ -102,6 +115,7 @@ private fun SathiMainShell(
                     lateViewModel?.sendUserMessage(spoken, speakReply = true)
                 }
                 SathiViewModel(
+                    appContext = app,
                     currentUserId = currentUserId,
                     userEmail = userEmail,
                     displayName = displayName,
@@ -124,11 +138,12 @@ private fun SathiMainShell(
     lateViewModel = viewModel
 
     val profile by viewModel.userProfile.collectAsStateWithLifecycle()
-    val globalConfig by viewModel.globalConfig.collectAsStateWithLifecycle()
+    val localSettings by viewModel.localSettings.collectAsStateWithLifecycle()
     val serviceWakeCount by SathiWakeWordService.wakeTriggerCount.collectAsStateWithLifecycle()
     val language = SathiLanguage.fromCode(profile?.preferredLanguage)
 
     var selectedTab by remember { mutableStateOf(SathiDestination.VOICE) }
+    var openLookAndFeelInSettings by remember { mutableStateOf(false) }
     var showAdminPanel by remember { mutableStateOf(false) }
 
     LaunchedEffect(wakeTriggerTick) {
@@ -155,10 +170,13 @@ private fun SathiMainShell(
         return
     }
 
+    val effectiveReduceMotion = localSettings.reduceMotion || localSettings.batterySaver
+    val activeAnimStyle = if (effectiveReduceMotion) SathiAnimationStyle.OFF else localSettings.animationStyle
+
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .background(sathiHorizonBackgroundBrush(darkTheme = isDarkTheme))
+            .background(sathiHorizonBackgroundBrush(darkTheme = isDarkTheme, colorTheme = colorTheme))
     ) {
         val isWide = maxWidth >= 600.dp
 
@@ -172,7 +190,10 @@ private fun SathiMainShell(
                     SathiDestination.entries.forEach { dest ->
                         NavigationRailItem(
                             selected = selectedTab == dest,
-                            onClick = { selectedTab = dest },
+                            onClick = {
+                                openLookAndFeelInSettings = false
+                                selectedTab = dest
+                            },
                             icon = { Icon(dest.icon, contentDescription = dest.labelEn) },
                             label = { Text(if (language == SathiLanguage.BN) dest.labelBn else dest.labelEn) }
                         )
@@ -181,8 +202,17 @@ private fun SathiMainShell(
                 Column(modifier = Modifier.weight(1f)) {
                     SathiTabContent(
                         selectedTab = selectedTab,
+                        animationStyle = activeAnimStyle,
                         viewModel = viewModel,
-                        onJumpToSettings = { selectedTab = SathiDestination.SETTINGS },
+                        openLookAndFeelInitially = openLookAndFeelInSettings,
+                        onOpenThemes = {
+                            openLookAndFeelInSettings = true
+                            selectedTab = SathiDestination.SETTINGS
+                        },
+                        onJumpToSettings = {
+                            openLookAndFeelInSettings = false
+                            selectedTab = SathiDestination.SETTINGS
+                        },
                         onOpenAdmin = { showAdminPanel = true },
                         modifier = Modifier.weight(1f)
                     )
@@ -200,7 +230,10 @@ private fun SathiMainShell(
                         SathiDestination.entries.forEach { dest ->
                             NavigationBarItem(
                                 selected = selectedTab == dest,
-                                onClick = { selectedTab = dest },
+                                onClick = {
+                                    openLookAndFeelInSettings = false
+                                    selectedTab = dest
+                                },
                                 icon = { Icon(dest.icon, contentDescription = dest.labelEn) },
                                 label = { Text(if (language == SathiLanguage.BN) dest.labelBn else dest.labelEn) }
                             )
@@ -210,8 +243,17 @@ private fun SathiMainShell(
             ) { innerPadding ->
                 SathiTabContent(
                     selectedTab = selectedTab,
+                    animationStyle = activeAnimStyle,
                     viewModel = viewModel,
-                    onJumpToSettings = { selectedTab = SathiDestination.SETTINGS },
+                    openLookAndFeelInitially = openLookAndFeelInSettings,
+                    onOpenThemes = {
+                        openLookAndFeelInSettings = true
+                        selectedTab = SathiDestination.SETTINGS
+                    },
+                    onJumpToSettings = {
+                        openLookAndFeelInSettings = false
+                        selectedTab = SathiDestination.SETTINGS
+                    },
                     onOpenAdmin = { showAdminPanel = true },
                     modifier = Modifier
                         .fillMaxSize()
@@ -226,24 +268,53 @@ private fun SathiMainShell(
 @Composable
 private fun SathiTabContent(
     selectedTab: SathiDestination,
+    animationStyle: SathiAnimationStyle,
     viewModel: SathiViewModel,
+    openLookAndFeelInitially: Boolean,
+    onOpenThemes: () -> Unit,
     onJumpToSettings: () -> Unit,
     onOpenAdmin: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    when (selectedTab) {
-        SathiDestination.VOICE -> HomeVoiceScreen(viewModel = viewModel, modifier = modifier)
-        SathiDestination.LIVE -> LiveVoiceChatScreen(viewModel = viewModel, modifier = modifier)
-        SathiDestination.STUDIO -> StudioToolsScreen(
-            viewModel = viewModel,
-            onNavigateToUpgrade = onJumpToSettings,
-            modifier = modifier
-        )
-        SathiDestination.MEMORY -> MemoryScreen(viewModel = viewModel, modifier = modifier)
-        SathiDestination.SETTINGS -> SettingsAndPlanScreen(
-            viewModel = viewModel,
-            onOpenAdminPanel = onOpenAdmin,
-            modifier = modifier
-        )
+    AnimatedContent(
+        targetState = selectedTab,
+        transitionSpec = {
+            when (animationStyle) {
+                SathiAnimationStyle.OFF -> fadeIn(tween(0)) togetherWith fadeOut(tween(0))
+                SathiAnimationStyle.ZOOM -> (scaleIn(initialScale = 0.94f, animationSpec = tween(210)) + fadeIn(tween(190)))
+                    .togetherWith(scaleOut(targetScale = 1.03f, animationSpec = tween(170)) + fadeOut(tween(150)))
+                SathiAnimationStyle.BOUNCY -> (slideInHorizontally(tween(240)) { it / 8 } + fadeIn(tween(200)))
+                    .togetherWith(slideOutHorizontally(tween(200)) { -it / 10 } + fadeOut(tween(160)))
+                SathiAnimationStyle.SMOOTH -> fadeIn(tween(190)) togetherWith fadeOut(tween(150))
+            }
+        },
+        modifier = modifier,
+        label = "sathi_tab_transition"
+    ) { tab ->
+        when (tab) {
+            SathiDestination.VOICE -> HomeVoiceScreen(
+                viewModel = viewModel,
+                onOpenAdminPanel = onOpenAdmin,
+                onOpenThemes = onOpenThemes,
+                modifier = Modifier.fillMaxSize()
+            )
+            SathiDestination.LIVE -> LiveVoiceChatScreen(
+                viewModel = viewModel,
+                onOpenAdminPanel = onOpenAdmin,
+                modifier = Modifier.fillMaxSize()
+            )
+            SathiDestination.STUDIO -> StudioToolsScreen(
+                viewModel = viewModel,
+                onNavigateToUpgrade = onJumpToSettings,
+                modifier = Modifier.fillMaxSize()
+            )
+            SathiDestination.MEMORY -> MemoryScreen(viewModel = viewModel, modifier = Modifier.fillMaxSize())
+            SathiDestination.SETTINGS -> SettingsAndPlanScreen(
+                viewModel = viewModel,
+                onOpenAdminPanel = onOpenAdmin,
+                initialOpenLookAndFeel = openLookAndFeelInitially,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
     }
 }

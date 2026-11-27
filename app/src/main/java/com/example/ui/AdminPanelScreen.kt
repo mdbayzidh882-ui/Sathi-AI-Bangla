@@ -81,6 +81,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.VisualTransformation
+import com.example.core.SathiPreferences
 import com.example.data.SathiAiService
 
 private enum class AdminTab(val label: String) {
@@ -233,7 +234,10 @@ fun AdminPanelScreen(
 
                     AdminTab.FEATURES -> AdminFeaturesTab(
                         config = globalConfig,
-                        onSave = { updated -> viewModel.adminSaveGlobalConfig(updated) }
+                        customSystemPrompt = localSettings.customSystemPrompt,
+                        onSave = { updated -> viewModel.adminSaveGlobalConfig(updated) },
+                        onSaveSystemPrompt = { prompt -> viewModel.saveCustomSystemPrompt(prompt) },
+                        onResetPrompt = { viewModel.saveCustomSystemPrompt(SathiPreferences.DEFAULT_BOSS_SYSTEM_PROMPT) }
                     )
 
                     AdminTab.LOGS -> AdminLogsTab(logs = logs)
@@ -524,7 +528,10 @@ private fun AdminUsersTab(
 @Composable
 private fun AdminFeaturesTab(
     config: com.example.model.AppConfig,
-    onSave: (com.example.model.AppConfig) -> Unit
+    customSystemPrompt: String,
+    onSave: (com.example.model.AppConfig) -> Unit,
+    onSaveSystemPrompt: (String) -> Unit,
+    onResetPrompt: () -> Unit
 ) {
     var cameraFree by remember(config) { mutableStateOf(config.cameraEnabledForFree) }
     var memoryFree by remember(config) { mutableStateOf(config.longTermMemoryForFree) }
@@ -532,11 +539,55 @@ private fun AdminFeaturesTab(
     var dayPlanFree by remember(config) { mutableStateOf(config.dayPlanningForFree) }
     var announcementActive by remember(config) { mutableStateOf(config.announcementActive) }
     var announcementText by remember(config) { mutableStateOf(config.announcementText) }
+    var promptInput by remember(customSystemPrompt) { mutableStateOf(customSystemPrompt) }
 
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "AI সিস্টেম প্রম্পট (System Prompt / Boss Persona)",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    OutlinedTextField(
+                        value = promptInput,
+                        onValueChange = { promptInput = it },
+                        label = { Text("Sathi AI Behavior & Persona Instruction") },
+                        minLines = 3,
+                        maxLines = 6,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("admin_system_prompt_input")
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                promptInput = SathiPreferences.DEFAULT_BOSS_SYSTEM_PROMPT
+                                onResetPrompt()
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("ডিফল্ট রিসেট")
+                        }
+                        Button(
+                            onClick = { onSaveSystemPrompt(promptInput) },
+                            modifier = Modifier
+                                .weight(1.2f)
+                                .testTag("save_system_prompt_button")
+                        ) {
+                            Text("সংরক্ষণ করুন")
+                        }
+                    }
+                }
+            }
+        }
         item {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {

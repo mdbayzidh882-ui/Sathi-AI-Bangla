@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">সাথী এআই</string>
+    <string name="app_name">Sathi AI</string>
     <string name="admob_app_id" translatable="false">ca-app-pub-3940256099942544~3347511713</string>
     <string name="admob_banner_unit_id" translatable="false">ca-app-pub-3940256099942544/6300978111</string>
     <string name="accessibility_screen_reader_description">সাথী স্ক্রিন রিডার: আপনি স্ক্রিন শেয়ার বা সাহায্য চাইলে স্ক্রিনের লেখা ও চলমান অ্যাপ বুঝতে সহায়তা করে (শুধুমাত্র আপনার অনুমতিতে)।</string>

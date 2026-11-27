@@ -228,6 +228,21 @@ class SathiWakeWordService : Service() {
         private val _wakeTriggerCount = MutableStateFlow(0)
         val wakeTriggerCount: StateFlow<Int> = _wakeTriggerCount.asStateFlow()
 
+        @Volatile
+        private var wasActiveBeforeGame: Boolean = false
+
+        fun handleGameModeChanged(context: Context, pausedForGame: Boolean) {
+            if (pausedForGame) {
+                if (_isRunning.value) {
+                    wasActiveBeforeGame = true
+                    runCatching { stopService(context) }
+                }
+            } else if (wasActiveBeforeGame) {
+                wasActiveBeforeGame = false
+                runCatching { startService(context) }
+            }
+        }
+
         fun startService(context: Context) {
             val intent = Intent(context, SathiWakeWordService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
