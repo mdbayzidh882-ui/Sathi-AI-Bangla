@@ -94,8 +94,22 @@ enum class PhoneActionType {
     SMS_CONFIRM,
     SOCIAL_MESSAGE_CONFIRM,
     GENERATE_IMAGE,
-    SCREEN_UI_ACTION
+    SCREEN_UI_ACTION,
+    EMERGENCY_SOS
 }
+
+data class SathiTaskItem(
+    val id: String,
+    val title: String,
+    val completed: Boolean = false,
+    val createdAtMs: Long = System.currentTimeMillis()
+)
+
+data class SosContact(
+    val id: String,
+    val name: String,
+    val phone: String
+)
 
 enum class MemoryCategory(val code: String, val labelBn: String, val labelEn: String) {
     PERSONAL("personal", "ব্যক্তিগত", "Personal"),

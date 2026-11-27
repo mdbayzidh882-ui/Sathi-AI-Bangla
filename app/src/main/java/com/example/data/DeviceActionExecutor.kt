@@ -86,6 +86,50 @@ class DeviceActionExecutor(context: Context) {
                     )
                 }
             }
+            PhoneActionType.EMERGENCY_SOS -> executeEmergencySos(
+                contacts = emptyList(),
+                helpMessage = secondary,
+                includeLocationHint = false,
+                language = language
+            )
+        }
+    }
+
+    fun executeEmergencySos(
+        contacts: List<com.example.model.SosContact>,
+        helpMessage: String,
+        includeLocationHint: Boolean,
+        language: SathiLanguage
+    ): ActionOutcome {
+        val phones = contacts.map { resolvePhoneDigits(it.phone) }.filter { it.length >= 3 }
+        val baseMsg = helpMessage.trim().ifBlank {
+            com.example.core.SathiPreferences.DEFAULT_SOS_MESSAGE
+        }
+        val finalMsg = if (includeLocationHint) {
+            "$baseMsg [Location shared via device GPS / Maps link when sending]"
+        } else {
+            baseMsg
+        }
+        return if (phones.isNotEmpty()) {
+            try {
+                val joined = phones.joinToString(";")
+                val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:$joined")).apply {
+                    putExtra("sms_body", finalMsg)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                appContext.startActivity(intent)
+                ActionOutcome.Executed(
+                    if (language == SathiLanguage.BN) {
+                        "${phones.size} জন বিশ্বস্ত পরিচিতির জন্য SOS বার্তা প্রস্তুত করা হয়েছে।"
+                    } else {
+                        "Prepared Emergency SOS message for ${phones.size} trusted contact(s)."
+                    }
+                )
+            } catch (_: Exception) {
+                executeConfirmedCall("999", language)
+            }
+        } else {
+            executeConfirmedCall("999", language)
         }
     }
 

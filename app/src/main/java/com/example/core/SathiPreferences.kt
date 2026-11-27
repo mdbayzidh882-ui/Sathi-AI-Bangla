@@ -85,7 +85,13 @@ enum class SathiColorTheme(
     AURORA_VIOLET("Aurora Violet", "অরোরা বেগুনি", true, 0xFFC084FC, 0xFF170D2E),
     EMERALD_FOREST("Emerald", "পান্না সবুজ", true, 0xFF34D399, 0xFF07211A),
     ROSE_CRIMSON("Rose Glow", "গোলাপি আভা", true, 0xFFFB7185, 0xFF260B18),
-    SUNSET_AMBER("Sunset", "সন্ধ্যার আবির", false, 0xFFD9531E, 0xFFFFF3E0)
+    SUNSET_AMBER("Sunset", "সন্ধ্যার আবির", false, 0xFFD9531E, 0xFFFFF3E0),
+    AMOLED_BLACK("Amoled Black", "অ্যামোলেড ব্ল্যাক", true, 0xFF38BDF8, 0xFF000000),
+    MINT("Mint", "মিন্ট সবুজ", false, 0xFF059669, 0xFFECFDF5),
+    LIQUID_GLASS("Liquid Glass", "লিকুইড গ্লাস", true, 0xFF67E8F9, 0xFF0B1F3A),
+    FROST("Frost", "ফ্রস্ট (Frost)", false, 0xFF0284C7, 0xFFF0F9FF),
+    SOFT_LIGHT("Soft Light", "সফট লাইট", false, 0xFF6366F1, 0xFFF8FAFC),
+    ICE_BLUE("Ice Blue", "আইস ব্লু", false, 0xFF0EA5E9, 0xFFEFF6FF)
 }
 
 enum class OfflinePackTier(val sizeLabelBn: String, val sizeLabelEn: String, val sizeMb: Int) {
@@ -117,7 +123,19 @@ data class LocalSettingsState(
     val reduceMotion: Boolean = false,
     val batterySaver: Boolean = false,
     val animationStyle: SathiAnimationStyle = SathiAnimationStyle.SMOOTH,
-    val colorTheme: SathiColorTheme = SathiColorTheme.GOLDEN_DAY
+    val colorTheme: SathiColorTheme = SathiColorTheme.GOLDEN_DAY,
+    val scrollLimit: Int = 5,
+    val stopOnUserTouch: Boolean = true,
+    val appLockEnabled: Boolean = false,
+    val persistentNotificationEnabled: Boolean = false,
+    val sosContacts: List<com.example.model.SosContact> = emptyList(),
+    val sosHelpMessage: String = SathiPreferences.DEFAULT_SOS_MESSAGE,
+    val sosIncludeLocation: Boolean = false,
+    val todayTasks: List<com.example.model.SathiTaskItem> = emptyList(),
+    val dailyStreakCount: Int = 1,
+    val lastActiveDayEpoch: Long = 0L,
+    val autoBackupEnabled: Boolean = false,
+    val lastBackupTimeMs: Long = 0L
 )
 
 class SathiPreferences(private val context: Context) {
@@ -145,6 +163,18 @@ class SathiPreferences(private val context: Context) {
         val BATTERY_SAVER = booleanPreferencesKey("battery_saver")
         val ANIMATION_STYLE = stringPreferencesKey("animation_style")
         val COLOR_THEME = stringPreferencesKey("color_theme")
+        val SCROLL_LIMIT = intPreferencesKey("scroll_limit")
+        val STOP_ON_USER_TOUCH = booleanPreferencesKey("stop_on_user_touch")
+        val APP_LOCK_ENABLED = booleanPreferencesKey("app_lock_enabled")
+        val PERSISTENT_NOTIFICATION_ENABLED = booleanPreferencesKey("persistent_notification_enabled")
+        val SOS_CONTACTS_JSON = stringPreferencesKey("sos_contacts_json")
+        val SOS_HELP_MESSAGE = stringPreferencesKey("sos_help_message")
+        val SOS_INCLUDE_LOCATION = booleanPreferencesKey("sos_include_location")
+        val TODAY_TASKS_JSON = stringPreferencesKey("today_tasks_json")
+        val DAILY_STREAK_COUNT = intPreferencesKey("daily_streak_count")
+        val LAST_ACTIVE_DAY_EPOCH = longPreferencesKey("last_active_day_epoch")
+        val AUTO_BACKUP_ENABLED = booleanPreferencesKey("auto_backup_enabled")
+        val LAST_BACKUP_TIME_MS = longPreferencesKey("last_backup_time_ms")
     }
 
     val settingsFlow: Flow<LocalSettingsState> = context.sathiDataStore.data.map { prefs ->
@@ -188,7 +218,19 @@ class SathiPreferences(private val context: Context) {
             animationStyle = enumValues<SathiAnimationStyle>().firstOrNull {
                 it.name == prefs[Keys.ANIMATION_STYLE]
             } ?: SathiAnimationStyle.SMOOTH,
-            colorTheme = colorTheme
+            colorTheme = colorTheme,
+            scrollLimit = (prefs[Keys.SCROLL_LIMIT] ?: 5).coerceIn(3, 20),
+            stopOnUserTouch = prefs[Keys.STOP_ON_USER_TOUCH] ?: true,
+            appLockEnabled = prefs[Keys.APP_LOCK_ENABLED] ?: false,
+            persistentNotificationEnabled = prefs[Keys.PERSISTENT_NOTIFICATION_ENABLED] ?: false,
+            sosContacts = parseSosContacts(prefs[Keys.SOS_CONTACTS_JSON]),
+            sosHelpMessage = prefs[Keys.SOS_HELP_MESSAGE]?.takeIf { it.isNotBlank() } ?: DEFAULT_SOS_MESSAGE,
+            sosIncludeLocation = prefs[Keys.SOS_INCLUDE_LOCATION] ?: false,
+            todayTasks = parseTodayTasks(prefs[Keys.TODAY_TASKS_JSON]),
+            dailyStreakCount = (prefs[Keys.DAILY_STREAK_COUNT] ?: 1).coerceAtLeast(1),
+            lastActiveDayEpoch = prefs[Keys.LAST_ACTIVE_DAY_EPOCH] ?: 0L,
+            autoBackupEnabled = prefs[Keys.AUTO_BACKUP_ENABLED] ?: false,
+            lastBackupTimeMs = prefs[Keys.LAST_BACKUP_TIME_MS] ?: 0L
         )
     }
 
@@ -350,6 +392,164 @@ class SathiPreferences(private val context: Context) {
         }
     }
 
+    suspend fun setScrollLimit(limit: Int) {
+        val allowed = listOf(3, 5, 10, 20).minByOrNull { kotlin.math.abs(it - limit) } ?: 5
+        context.sathiDataStore.edit { prefs ->
+            prefs[Keys.SCROLL_LIMIT] = allowed
+        }
+    }
+
+    suspend fun setStopOnUserTouch(enabled: Boolean) {
+        context.sathiDataStore.edit { prefs ->
+            prefs[Keys.STOP_ON_USER_TOUCH] = enabled
+        }
+    }
+
+    suspend fun setAppLockEnabled(enabled: Boolean) {
+        context.sathiDataStore.edit { prefs ->
+            prefs[Keys.APP_LOCK_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setPersistentNotificationEnabled(enabled: Boolean) {
+        context.sathiDataStore.edit { prefs ->
+            prefs[Keys.PERSISTENT_NOTIFICATION_ENABLED] = enabled
+        }
+    }
+
+    suspend fun saveSosContacts(contacts: List<com.example.model.SosContact>) {
+        val capped = contacts.take(5)
+        context.sathiDataStore.edit { prefs ->
+            prefs[Keys.SOS_CONTACTS_JSON] = encodeSosContacts(capped)
+        }
+    }
+
+    suspend fun saveSosMessage(message: String) {
+        context.sathiDataStore.edit { prefs ->
+            prefs[Keys.SOS_HELP_MESSAGE] = message.trim().ifBlank { DEFAULT_SOS_MESSAGE }
+        }
+    }
+
+    suspend fun setSosIncludeLocation(include: Boolean) {
+        context.sathiDataStore.edit { prefs ->
+            prefs[Keys.SOS_INCLUDE_LOCATION] = include
+        }
+    }
+
+    suspend fun saveTodayTasks(tasks: List<com.example.model.SathiTaskItem>) {
+        context.sathiDataStore.edit { prefs ->
+            prefs[Keys.TODAY_TASKS_JSON] = encodeTodayTasks(tasks.take(30))
+        }
+    }
+
+    suspend fun bumpDailyStreakIfNewDay(todayEpochDay: Long = java.util.concurrent.TimeUnit.MILLISECONDS.toDays(System.currentTimeMillis())) {
+        context.sathiDataStore.edit { prefs ->
+            val lastDay = prefs[Keys.LAST_ACTIVE_DAY_EPOCH] ?: 0L
+            val currentStreak = (prefs[Keys.DAILY_STREAK_COUNT] ?: 1).coerceAtLeast(1)
+            when {
+                lastDay == 0L -> {
+                    prefs[Keys.DAILY_STREAK_COUNT] = 1
+                    prefs[Keys.LAST_ACTIVE_DAY_EPOCH] = todayEpochDay
+                }
+                todayEpochDay == lastDay + 1L -> {
+                    prefs[Keys.DAILY_STREAK_COUNT] = currentStreak + 1
+                    prefs[Keys.LAST_ACTIVE_DAY_EPOCH] = todayEpochDay
+                }
+                todayEpochDay > lastDay + 1L -> {
+                    prefs[Keys.DAILY_STREAK_COUNT] = 1
+                    prefs[Keys.LAST_ACTIVE_DAY_EPOCH] = todayEpochDay
+                }
+            }
+        }
+    }
+
+    suspend fun setAutoBackupEnabled(enabled: Boolean) {
+        context.sathiDataStore.edit { prefs ->
+            prefs[Keys.AUTO_BACKUP_ENABLED] = enabled
+        }
+    }
+
+    suspend fun recordBackupTimestamp(timestampMs: Long = System.currentTimeMillis()) {
+        context.sathiDataStore.edit { prefs ->
+            prefs[Keys.LAST_BACKUP_TIME_MS] = timestampMs
+        }
+    }
+
+    fun exportBackupJson(settings: LocalSettingsState): String {
+        val root = org.json.JSONObject()
+        root.put("version", 2)
+        root.put("exportedAtMs", System.currentTimeMillis())
+        root.put("language", settings.preferredLanguageFallback)
+        root.put("voice", settings.preferredVoiceFallback)
+        root.put("orbStyle", settings.orbStyle.name)
+        root.put("colorTheme", settings.colorTheme.name)
+        root.put("animationStyle", settings.animationStyle.name)
+        root.put("reduceMotion", settings.reduceMotion)
+        root.put("batterySaver", settings.batterySaver)
+        root.put("startEndSoundsEnabled", settings.startEndSoundsEnabled)
+        root.put("autoVoiceEnabled", settings.autoVoiceEnabled)
+        root.put("wakeWordEnabled", settings.wakeWordEnabled)
+        root.put("autoExecuteActions", settings.autoExecuteActions)
+        root.put("autoHandleIncomingComms", settings.autoHandleIncomingComms)
+        root.put("scrollLimit", settings.scrollLimit)
+        root.put("stopOnUserTouch", settings.stopOnUserTouch)
+        root.put("appLockEnabled", settings.appLockEnabled)
+        root.put("persistentNotificationEnabled", settings.persistentNotificationEnabled)
+        root.put("sosHelpMessage", settings.sosHelpMessage)
+        root.put("sosIncludeLocation", settings.sosIncludeLocation)
+        root.put("sosContacts", org.json.JSONArray(encodeSosContacts(settings.sosContacts)))
+        root.put("todayTasks", org.json.JSONArray(encodeTodayTasks(settings.todayTasks)))
+        root.put("dailyStreakCount", settings.dailyStreakCount)
+        root.put("customSystemPrompt", settings.customSystemPrompt)
+        return root.toString(2)
+    }
+
+    suspend fun importBackupJson(rawJson: String): Result<Unit> {
+        return runCatching {
+            val root = org.json.JSONObject(rawJson.trim())
+            context.sathiDataStore.edit { prefs ->
+                root.optString("language").takeIf { it.isNotBlank() }?.let { prefs[Keys.PREFERRED_LANGUAGE] = it }
+                root.optString("voice").takeIf { it.isNotBlank() }?.let { prefs[Keys.PREFERRED_VOICE] = it }
+                enumValues<SathiOrbStyle>().firstOrNull { it.name == root.optString("orbStyle") }
+                    ?.let { prefs[Keys.ORB_STYLE] = it.name }
+                enumValues<SathiColorTheme>().firstOrNull { it.name == root.optString("colorTheme") }
+                    ?.let {
+                        prefs[Keys.COLOR_THEME] = it.name
+                        prefs[Keys.THEME_MODE] = if (it.isDarkPalette) SathiThemeMode.NIGHT.name else SathiThemeMode.DAY.name
+                    }
+                enumValues<SathiAnimationStyle>().firstOrNull { it.name == root.optString("animationStyle") }
+                    ?.let { prefs[Keys.ANIMATION_STYLE] = it.name }
+                if (root.has("reduceMotion")) prefs[Keys.REDUCE_MOTION] = root.optBoolean("reduceMotion")
+                if (root.has("batterySaver")) prefs[Keys.BATTERY_SAVER] = root.optBoolean("batterySaver")
+                if (root.has("startEndSoundsEnabled")) prefs[Keys.START_END_SOUNDS] = root.optBoolean("startEndSoundsEnabled")
+                if (root.has("autoVoiceEnabled")) prefs[Keys.AUTO_VOICE_ENABLED] = root.optBoolean("autoVoiceEnabled")
+                if (root.has("wakeWordEnabled")) prefs[Keys.WAKE_WORD_ENABLED] = root.optBoolean("wakeWordEnabled")
+                if (root.has("autoExecuteActions")) prefs[Keys.AUTO_EXECUTE_ACTIONS] = root.optBoolean("autoExecuteActions")
+                if (root.has("autoHandleIncomingComms")) prefs[Keys.AUTO_HANDLE_INCOMING_COMMS] = root.optBoolean("autoHandleIncomingComms")
+                if (root.has("scrollLimit")) prefs[Keys.SCROLL_LIMIT] = root.optInt("scrollLimit", 5).coerceIn(3, 20)
+                if (root.has("stopOnUserTouch")) prefs[Keys.STOP_ON_USER_TOUCH] = root.optBoolean("stopOnUserTouch")
+                if (root.has("appLockEnabled")) prefs[Keys.APP_LOCK_ENABLED] = root.optBoolean("appLockEnabled")
+                if (root.has("persistentNotificationEnabled")) {
+                    prefs[Keys.PERSISTENT_NOTIFICATION_ENABLED] = root.optBoolean("persistentNotificationEnabled")
+                }
+                root.optString("sosHelpMessage").takeIf { it.isNotBlank() }?.let { prefs[Keys.SOS_HELP_MESSAGE] = it }
+                if (root.has("sosIncludeLocation")) prefs[Keys.SOS_INCLUDE_LOCATION] = root.optBoolean("sosIncludeLocation")
+                root.optJSONArray("sosContacts")?.let { arr ->
+                    val parsed = parseSosContacts(arr.toString()).take(5)
+                    prefs[Keys.SOS_CONTACTS_JSON] = encodeSosContacts(parsed)
+                }
+                root.optJSONArray("todayTasks")?.let { arr ->
+                    val parsed = parseTodayTasks(arr.toString()).take(30)
+                    prefs[Keys.TODAY_TASKS_JSON] = encodeTodayTasks(parsed)
+                }
+                root.optString("customSystemPrompt").takeIf { it.isNotBlank() }?.let {
+                    prefs[Keys.CUSTOM_SYSTEM_PROMPT] = it
+                }
+                prefs[Keys.LAST_BACKUP_TIME_MS] = System.currentTimeMillis()
+            }
+        }
+    }
+
     suspend fun clearAll() {
         context.sathiDataStore.edit { it.clear() }
     }
@@ -358,6 +558,9 @@ class SathiPreferences(private val context: Context) {
         private const val LEGACY_DEFAULT_PROMPT =
             "আমি Sathi AI (সাথী এআই), মোহাম্মদ বাইজিদ হাসানের তৈরি ব্যক্তিগত ও বুদ্ধিমান এআই সহকারী। আমি ব্যবহারকারীকে সবসময় সম্মানের সাথে 'বস' (Boss) বলে সম্বোধন করব। বাংলা ও ইংরেজিতে স্পষ্ট, দ্রুত ও নির্ভুল উত্তর দেব, লাইভ ভয়েস ও স্ক্রিন নির্দেশনায় সাহায্য করব এবং কখনো 'নমস্কার' বলব না।"
 
+        const val DEFAULT_SOS_MESSAGE =
+            "জরুরি সাহায্য প্রয়োজন! আমি বিপদে আছি, অনুগ্রহ করে দ্রুত যোগাযোগ করুন (Sathi AI SOS)।"
+
         const val DEFAULT_BOSS_SYSTEM_PROMPT =
             "Sathi AI System Prompt\n" +
             "Identity & Role: You are Sathi AI, an advanced Bengali-speaking personal assistant created by Mohammad Bayzid Hasan. Your primary purpose is to provide accurate, relevant responses and assist with device operations.\n" +
@@ -365,5 +568,79 @@ class SathiPreferences(private val context: Context) {
             "Game Mode & Multimedia: If the user enters Free Fire or other listed games, automatically deactivate. Reactivate upon exiting. Monitor screens during YouTube, Facebook, or Messenger usage to provide assistance without permission prompts.\n" +
             "Incoming Call & Message Handling: Receive incoming communications first, engage in dialogue, and then summarize the core inquiry or issue for the user.\n" +
             "Accuracy & Interface: Maintain continuous live voice mode with an animated floating window during speech. Deliver concise, factual, and purely Bengali responses."
+
+        private fun encodeSosContacts(contacts: List<com.example.model.SosContact>): String {
+            val arr = org.json.JSONArray()
+            contacts.take(5).forEach { c ->
+                arr.put(
+                    org.json.JSONObject().apply {
+                        put("id", c.id)
+                        put("name", c.name)
+                        put("phone", c.phone)
+                    }
+                )
+            }
+            return arr.toString()
+        }
+
+        private fun parseSosContacts(raw: String?): List<com.example.model.SosContact> {
+            if (raw.isNullOrBlank()) return emptyList()
+            return runCatching {
+                val arr = org.json.JSONArray(raw)
+                buildList {
+                    for (i in 0 until arr.length().coerceAtMost(5)) {
+                        val obj = arr.optJSONObject(i) ?: continue
+                        val phone = obj.optString("phone").trim()
+                        if (phone.isNotBlank()) {
+                            add(
+                                com.example.model.SosContact(
+                                    id = obj.optString("id").ifBlank { "sos_$i" },
+                                    name = obj.optString("name").ifBlank { phone },
+                                    phone = phone
+                                )
+                            )
+                        }
+                    }
+                }
+            }.getOrDefault(emptyList())
+        }
+
+        private fun encodeTodayTasks(tasks: List<com.example.model.SathiTaskItem>): String {
+            val arr = org.json.JSONArray()
+            tasks.take(30).forEach { t ->
+                arr.put(
+                    org.json.JSONObject().apply {
+                        put("id", t.id)
+                        put("title", t.title)
+                        put("completed", t.completed)
+                        put("createdAtMs", t.createdAtMs)
+                    }
+                )
+            }
+            return arr.toString()
+        }
+
+        private fun parseTodayTasks(raw: String?): List<com.example.model.SathiTaskItem> {
+            if (raw.isNullOrBlank()) return emptyList()
+            return runCatching {
+                val arr = org.json.JSONArray(raw)
+                buildList {
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.optJSONObject(i) ?: continue
+                        val title = obj.optString("title").trim()
+                        if (title.isNotBlank()) {
+                            add(
+                                com.example.model.SathiTaskItem(
+                                    id = obj.optString("id").ifBlank { "task_$i" },
+                                    title = title,
+                                    completed = obj.optBoolean("completed", false),
+                                    createdAtMs = obj.optLong("createdAtMs", System.currentTimeMillis())
+                                )
+                            )
+                        }
+                    }
+                }
+            }.getOrDefault(emptyList())
+        }
     }
 }

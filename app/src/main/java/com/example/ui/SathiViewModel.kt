@@ -46,11 +46,14 @@ import com.example.model.PlanTier
 import com.example.model.PremiumCode
 import com.example.model.SathiLanguage
 import com.example.model.SathiMood
+import com.example.model.SathiTaskItem
 import com.example.model.SathiVoiceProfile
+import com.example.model.SosContact
 import com.example.model.UserEmotion
 import com.example.model.UserMemory
 import com.example.model.UserProfile
 import com.example.model.WebSource
+import com.example.overlay.SathiQuickNotificationHelper
 import com.example.overlay.SathiScreenReaderService
 import com.example.overlay.SathiScreenShareService
 import com.example.overlay.SathiWakeWordService
@@ -214,6 +217,13 @@ class SathiViewModel(
                 preferences.settingsFlow.collect { settings ->
                     voiceController.setAutoVoiceEnabled(settings.autoVoiceEnabled)
                     voiceController.setStartEndSoundsEnabled(settings.startEndSoundsEnabled)
+                    SathiScreenReaderService.configuredScrollLimit = settings.scrollLimit
+                    SathiScreenReaderService.stopOnUserTouchEnabled = settings.stopOnUserTouch
+                    SathiQuickNotificationHelper.syncNotification(
+                        context = appContext,
+                        enabled = settings.persistentNotificationEnabled,
+                        language = SathiLanguage.fromCode(settings.preferredLanguageFallback)
+                    )
                 }
             }
             launch {
@@ -254,6 +264,7 @@ class SathiViewModel(
                 }
             }
             repository.ensureUserProfile(currentUserId, displayName, userEmail)
+            preferences.bumpDailyStreakIfNewDay()
             _isOwnerAdmin.value = repository.isUserAdminDocPresent()
             val existingSessions = repository.observeChatSessions(currentUserId).first()
             if (existingSessions.isNotEmpty()) {
@@ -1036,6 +1047,14 @@ class SathiViewModel(
         } else if (turn.actionType != PhoneActionType.NONE && turn.actionType != PhoneActionType.WEB_SEARCH) {
             val autoExec = localSettings.value.autoExecuteActions
             val outcome = when {
+                turn.actionType == PhoneActionType.EMERGENCY_SOS -> {
+                    deviceActions.executeEmergencySos(
+                        contacts = localSettings.value.sosContacts,
+                        helpMessage = localSettings.value.sosHelpMessage,
+                        includeLocationHint = localSettings.value.sosIncludeLocation,
+                        language = lang
+                    )
+                }
                 autoExec && turn.actionType == PhoneActionType.SOCIAL_MESSAGE_CONFIRM -> {
                     deviceActions.executeConfirmedSocialMessage(
                         platform = turn.actionParam,
@@ -1726,6 +1745,182 @@ class SathiViewModel(
                 )
             }
         }
+    }
+
+    // --- Phone Control, Safety, SOS, Tasks & Backup ---
+
+    fun setScrollLimit(limit: Int) {
+        viewModelScope.launch { preferences.setScrollLimit(limit) }
+    }
+
+    fun setStopOnUserTouch(enabled: Boolean) {
+        viewModelScope.launch { preferences.setStopOnUserTouch(enabled) }
+    }
+
+    fun setAppLockEnabled(enabled: Boolean) {
+        viewModelScope.launch { preferences.setAppLockEnabled(enabled) }
+    }
+
+    fun setPersistentNotificationEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            preferences.setPersistentNotificationEnabled(enabled)
+            SathiQuickNotificationHelper.syncNotification(appContext, enabled, currentLanguage())
+        }
+    }
+
+    fun addSosContact(name: String, phone: String) {
+        val cleanName = name.trim()
+        val cleanPhone = phone.trim()
+        if (cleanPhone.isBlank()) return
+        val existing = localSettings.value.sosContacts
+        if (existing.size >= 5) {
+            val lang = currentLanguage()
+            _bannerState.value = UiBannerState.Error(
+                if (lang == SathiLanguage.BN) "সর্বোচ্চ ৫ জন জরুরি পরিচিতি যোগ করা যাবে।" else "Maximum 5 SOS contacts allowed."
+            )
+            return
+        }
+        val updated = existing + SosContact(
+            id = UUID.randomUUID().toString(),
+            name = cleanName.ifBlank { cleanPhone },
+            phone = cleanPhone
+        )
+        viewModelScope.launch {
+            preferences.saveSosContacts(updated)
+            if (localSettings.value.autoBackupEnabled) {
+                preferences.recordBackupTimestamp()
+            }
+        }
+    }
+
+    fun removeSosContact(id: String) {
+        val updated = localSettings.value.sosContacts.filterNot { it.id == id }
+        viewModelScope.launch { preferences.saveSosContacts(updated) }
+    }
+
+    fun saveSosMessage(message: String) {
+        viewModelScope.launch {
+            preferences.saveSosMessage(message)
+            val lang = currentLanguage()
+            _bannerState.value = UiBannerState.Info(
+                if (lang == SathiLanguage.BN) "জরুরি SOS বার্তা সংরক্ষিত হয়েছে ✓" else "Emergency SOS message saved ✓"
+            )
+        }
+    }
+
+    fun setSosIncludeLocation(include: Boolean) {
+        viewModelScope.launch { preferences.setSosIncludeLocation(include) }
+    }
+
+    fun triggerEmergencySos() {
+        val lang = currentLanguage()
+        val settings = localSettings.value
+        val outcome = deviceActions.executeEmergencySos(
+            contacts = settings.sosContacts,
+            helpMessage = settings.sosHelpMessage,
+            includeLocationHint = settings.sosIncludeLocation,
+            language = lang
+        )
+        when (outcome) {
+            is ActionOutcome.Executed -> _bannerState.value = UiBannerState.Info(outcome.label)
+            is ActionOutcome.Failed -> _bannerState.value = UiBannerState.Error(outcome.message)
+            is ActionOutcome.NeedsConfirmation -> _pendingConfirmation.value = outcome.confirmation
+        }
+    }
+
+    fun addTodayTask(title: String) {
+        val clean = title.trim()
+        if (clean.isBlank()) return
+        val updated = listOf(
+            SathiTaskItem(
+                id = UUID.randomUUID().toString(),
+                title = clean,
+                completed = false
+            )
+        ) + localSettings.value.todayTasks
+        viewModelScope.launch {
+            preferences.saveTodayTasks(updated)
+            if (localSettings.value.autoBackupEnabled) {
+                preferences.recordBackupTimestamp()
+            }
+        }
+    }
+
+    fun toggleTodayTask(id: String) {
+        val updated = localSettings.value.todayTasks.map { item ->
+            if (item.id == id) item.copy(completed = !item.completed) else item
+        }
+        viewModelScope.launch {
+            preferences.saveTodayTasks(updated)
+            if (localSettings.value.autoBackupEnabled) {
+                preferences.recordBackupTimestamp()
+            }
+        }
+    }
+
+    fun deleteTodayTask(id: String) {
+        val updated = localSettings.value.todayTasks.filterNot { it.id == id }
+        viewModelScope.launch { preferences.saveTodayTasks(updated) }
+    }
+
+    fun setAutoBackupEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            preferences.setAutoBackupEnabled(enabled)
+            if (enabled) {
+                preferences.recordBackupTimestamp()
+            }
+        }
+    }
+
+    fun buildBackupJson(): String {
+        viewModelScope.launch { preferences.recordBackupTimestamp() }
+        return preferences.exportBackupJson(localSettings.value)
+    }
+
+    fun importBackupJson(rawJson: String) {
+        val lang = currentLanguage()
+        viewModelScope.launch {
+            val res = preferences.importBackupJson(rawJson)
+            if (res.isSuccess) {
+                _bannerState.value = UiBannerState.Info(
+                    if (lang == SathiLanguage.BN) "ব্যাকআপ সফলভাবে রিস্টোর হয়েছে ✓" else "Backup restored successfully ✓"
+                )
+            } else {
+                _bannerState.value = UiBannerState.Error(
+                    if (lang == SathiLanguage.BN) "ব্যাকআপ ফাইলটি সঠিক নয়।" else "Invalid backup JSON format."
+                )
+            }
+        }
+    }
+
+    fun redetectAiModels(): String {
+        val lang = currentLanguage()
+        val settings = localSettings.value
+        val online = networkMonitor.isOnline()
+        val hasGeminiKey = settings.customGeminiApiKey.isNotBlank()
+        val packCount = offlinePackManager.getInstalledTopicCount()
+        val packSummary = offlinePackManager.getStorageBudgetLabel(lang)
+        val summary = if (lang == SathiLanguage.BN) {
+            buildString {
+                append("এআই মডেল ও ইঞ্জিন স্ট্যাটাস:\n")
+                append("• অনলাইন জেমিনি (2.5 Flash / Lite): ")
+                append(if (hasGeminiKey && online) "সক্রিয় ও প্রস্তুত ✓" else if (hasGeminiKey) "চাবি সংরক্ষিত (অফলাইন)" else "ঐচ্ছিক চাবি যুক্ত নেই")
+                append("\n• ফ্রি ওয়েব সার্চ ও অনুবাদ: ")
+                append(if (online) "সক্রিয় ✓" else "ইন্টারনেট প্রয়োজন")
+                append("\n• অফলাইন প্যাক ($packCount বিষয়): $packSummary")
+            }
+        } else {
+            buildString {
+                append("AI Models & Engine Status:\n")
+                append("• Cloud Gemini (2.5 Flash / Lite): ")
+                append(if (hasGeminiKey && online) "Active & Ready ✓" else if (hasGeminiKey) "Key saved (Offline)" else "Optional key not set")
+                append("\n• Free Web Grounding & Translate: ")
+                append(if (online) "Active ✓" else "Needs internet")
+                append("\n• Offline Pack ($packCount topics): $packSummary")
+            }
+        }
+        _bannerState.value = UiBannerState.Info(summary)
+        return summary
     }
 
     fun clearBanner() {

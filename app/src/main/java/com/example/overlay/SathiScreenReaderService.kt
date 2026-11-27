@@ -48,6 +48,15 @@ class SathiScreenReaderService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (stopOnUserTouchEnabled && event != null &&
+            (event.eventType == AccessibilityEvent.TYPE_TOUCH_INTERACTION_START ||
+                event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED)
+        ) {
+            val flow = pendingSocialFlow
+            if (flow != null && System.currentTimeMillis() - flow.lastActionTimeMs > 300L) {
+                pendingSocialFlow = null
+            }
+        }
         captureWindowSnapshot()
         tryExecuteSocialFlow()
     }
@@ -212,6 +221,37 @@ class SathiScreenReaderService : AccessibilityService() {
             if (pkg == packageName) return false
 
             val lower = command.lowercase()
+            if (lower.startsWith("select_item:")) {
+                val targetOneBased = lower.substringAfter("select_item:").toIntOrNull()?.coerceAtLeast(1) ?: 1
+                val candidates = mutableListOf<AccessibilityNodeInfo>()
+                collectClickableItems(root, candidates, 0)
+                val targetNode = candidates.getOrNull(targetOneBased - 1) ?: return false
+                return performClickSafely(targetNode)
+            }
+
+            if (lower == "scroll_down" || lower == "scroll_up") {
+                val action = if (lower == "scroll_up") {
+                    AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+                } else {
+                    AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+                }
+                val scrollable = findFirstScrollableNode(root) ?: return false
+                val now = System.currentTimeMillis()
+                if (now - lastScrollWindowMs > 30_000L) {
+                    recentAutoScrollCount = 0
+                    lastScrollWindowMs = now
+                }
+                if (recentAutoScrollCount >= configuredScrollLimit.coerceIn(1, 20)) {
+                    return false
+                }
+                val ok = scrollable.performAction(action)
+                if (ok) {
+                    recentAutoScrollCount++
+                    lastScrollWindowMs = now
+                }
+                return ok
+            }
+
             if (textToType.isNotBlank() &&
                 (lower == "type" || lower.contains("টাইটেল") || lower.contains("title") ||
                     lower.contains("ক্যাপশন") || lower.contains("caption") || lower.contains("লিখ") || lower.contains("লেখ"))
@@ -242,6 +282,39 @@ class SathiScreenReaderService : AccessibilityService() {
         } catch (_: Exception) {
             false
         }
+    }
+
+    private fun collectClickableItems(
+        node: AccessibilityNodeInfo?,
+        out: MutableList<AccessibilityNodeInfo>,
+        depth: Int
+    ) {
+        if (node == null || depth > 14 || out.size >= 15) return
+        if (node.isVisibleToUser && node.isClickable && !node.isEditable) {
+            val txt = node.text?.toString()?.trim().orEmpty()
+            val desc = node.contentDescription?.toString()?.trim().orEmpty()
+            val hasMeaningfulChild = (0 until node.childCount).any { idx ->
+                val child = node.getChild(idx)
+                !child?.text.isNullOrBlank() || !child?.contentDescription.isNullOrBlank()
+            }
+            if (txt.isNotEmpty() || desc.isNotEmpty() || hasMeaningfulChild) {
+                out.add(node)
+                return
+            }
+        }
+        for (i in 0 until node.childCount) {
+            collectClickableItems(node.getChild(i), out, depth + 1)
+        }
+    }
+
+    private fun findFirstScrollableNode(node: AccessibilityNodeInfo?, depth: Int = 0): AccessibilityNodeInfo? {
+        if (node == null || depth > 14) return null
+        if (node.isVisibleToUser && node.isScrollable) return node
+        for (i in 0 until node.childCount) {
+            val found = findFirstScrollableNode(node.getChild(i), depth + 1)
+            if (found != null) return found
+        }
+        return null
     }
 
     private fun findMatchingActionButton(
@@ -568,6 +641,18 @@ class SathiScreenReaderService : AccessibilityService() {
 
         @Volatile
         private var pendingSocialFlow: StagedSocialFlow? = null
+
+        @Volatile
+        var configuredScrollLimit: Int = 5
+
+        @Volatile
+        var stopOnUserTouchEnabled: Boolean = true
+
+        @Volatile
+        private var recentAutoScrollCount: Int = 0
+
+        @Volatile
+        private var lastScrollWindowMs: Long = 0L
 
         private val _isConnected = MutableStateFlow(false)
         val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()

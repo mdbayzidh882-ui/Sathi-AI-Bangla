@@ -295,11 +295,21 @@ class SathiAiService(
                 else " I also remember your note about '${firstMem.title}'!"
             } else ""
             val reply = if (language == SathiLanguage.BN) {
-                "আসসালামু আলাইকুম বস! আলহামদুলিল্লাহ, আমি খুব ভালো আছি।$savedHint আজ আপনাকে কীভাবে সাহায্য করতে পারি?"
+                "আসসালামু আলাইকুম বস! অনেকক্ষণ পর তোমার মিষ্টি আওয়াজ শুনলাম! আমি খুব ভালো আছি।$savedHint বলো বস, আজ কীভাবে তোমাকে সাহায্য করতে পারি?"
             } else {
-                "Assalamu Alaikum Boss! I'm doing wonderfully, thank you.$savedHint How can I help you today?"
+                "Assalamu Alaikum Boss! Great hearing your voice again!$savedHint Tell me Boss, how can I help you today?"
             }
             return Result.success(simpleTurn(reply, SathiMood.HAPPY))
+        }
+
+        // 3b. Emergency SOS Trigger ("SOS", "বিপদে আছি", "বাঁচাও জরুরি", "i am in danger")
+        if (isEmergencySosTrigger(lower)) {
+            val reply = if (language == SathiLanguage.BN) {
+                "জরুরি SOS চালু করছি বস! আপনার বিশ্বস্ত পরিচিতিদের কাছে সাহায্যের বার্তা পাঠানো হচ্ছে—একদম ঘাবড়াবেন না, আমি সাথে আছি।"
+            } else {
+                "Triggering Emergency SOS now, Boss! Preparing your alert for trusted contacts—stay calm, I'm right with you."
+            }
+            return Result.success(simpleTurn(reply, SathiMood.COMFORTING, PhoneActionType.EMERGENCY_SOS))
         }
 
         // 4. Image Creation Intent (routed cleanly to SathiImageGenRepository in ViewModel)
@@ -1468,6 +1478,17 @@ class SathiAiService(
                 lower.contains("send now") || lower.contains("and send")
         }
 
+        fun isEmergencySosTrigger(lower: String): Boolean {
+            if (lower.contains("কীভাবে") || lower.contains("কিভাবে") || lower.contains("how to")) return false
+            return Regex("\\bsos\\b").containsMatchIn(lower) ||
+                lower.contains("emergency sos") ||
+                lower.contains("i am in danger") ||
+                lower.contains("i'm in danger") ||
+                lower.contains("বিপদে আছি") ||
+                lower.contains("জরুরি সাহায্য") ||
+                lower.contains("বাঁচাও জরুরি")
+        }
+
         fun detectScreenUiCommand(
             text: String,
             lower: String,
@@ -1483,13 +1504,99 @@ class SathiAiService(
                 lower.contains("এসএমএস") || lower.contains("sms")
             if (hasSocialTarget) return null
 
+            // Auto-intro title on active upload/post field when asked about Sathi itself
+            if ((lower.contains("নিজের সম্পর্কে") || lower.contains("তোমার সম্পর্কে")) &&
+                (lower.contains("টাইটেল") || lower.contains("title") || lower.contains("লিখে দাও") || lower.contains("লেখো"))
+            ) {
+                val introTitle = "আমি সাথী, মোহাম্মদ বাইজিদ হাসানের তৈরি তোমার ডিজিটাল বন্ধু!"
+                val reply = if (language == SathiLanguage.BN) {
+                    "ঠিক আছে বস! আমি লিখে দিচ্ছি—'$introTitle'"
+                } else {
+                    "Okay Boss! Typing intro title: '$introTitle'"
+                }
+                return SathiTurnResult(
+                    replyText = reply,
+                    mood = SathiMood.HAPPY,
+                    actionType = PhoneActionType.SCREEN_UI_ACTION,
+                    actionParam = "type",
+                    secondaryParam = introTitle,
+                    shouldSaveMemory = false,
+                    memoryCategory = MemoryCategory.NOTE,
+                    memoryTitle = "",
+                    memoryContent = ""
+                )
+            }
+
+            // Step-by-step nth-item selection on active screen (e.g., "দ্বিতীয় ভিডিও সিলেক্ট করো", "২ নম্বর আইটেমে ক্লিক করো")
+            val wantsSelectOrPick = lower.contains("সিলেক্ট") || lower.contains("নির্বাচন") ||
+                lower.contains("চাপো") || lower.contains("খোলো") || lower.contains("ক্লিক") ||
+                lower.contains("ট্যাপ") || lower.contains("টাচ") ||
+                lower.contains("select") || lower.contains("pick") || lower.contains("choose") ||
+                lower.contains("click") || lower.contains("tap")
+            if (wantsSelectOrPick && (lower.contains("ভিডিও") || lower.contains("আইটেম") || lower.contains("অপশন") ||
+                    lower.contains("video") || lower.contains("item") || lower.contains("result") || lower.contains("option"))
+            ) {
+                val normalizedDigits = lower
+                    .replace('১', '1').replace('২', '2').replace('৩', '3')
+                    .replace('৪', '4').replace('৫', '5').replace('৬', '6')
+                    .replace('৭', '7').replace('৮', '8').replace('৯', '9')
+                val itemIndex = when {
+                    lower.contains("প্রথম") || lower.contains("১ম") || lower.contains("1st") || lower.contains("first") -> 1
+                    lower.contains("দ্বিতীয়") || lower.contains("দ্বিতীয়") || lower.contains("২য়") || lower.contains("2nd") || lower.contains("second") -> 2
+                    lower.contains("তৃতীয়") || lower.contains("তৃতীয়") || lower.contains("৩য়") || lower.contains("3rd") || lower.contains("third") -> 3
+                    lower.contains("চতুর্থ") || lower.contains("৪র্থ") || lower.contains("4th") || lower.contains("fourth") -> 4
+                    lower.contains("পঞ্চম") || lower.contains("৫ম") || lower.contains("5th") || lower.contains("fifth") -> 5
+                    else -> Regex("([1-9])\\s*(?:নম্বর|নং|number|no\\b)").find(normalizedDigits)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                        ?: Regex("(?:^|\\s)([1-9])(?:\\s|$)").find(normalizedDigits)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                }
+                if (itemIndex != null) {
+                    val reply = if (language == SathiLanguage.BN) {
+                        "ঠিক আছে বস, স্ক্রিনের $itemIndex নম্বর আইটেমটি সিলেক্ট করছি।"
+                    } else {
+                        "Right away Boss, selecting item #$itemIndex on screen."
+                    }
+                    return SathiTurnResult(
+                        replyText = reply,
+                        mood = SathiMood.HAPPY,
+                        actionType = PhoneActionType.SCREEN_UI_ACTION,
+                        actionParam = "select_item:$itemIndex",
+                        secondaryParam = "",
+                        shouldSaveMemory = false,
+                        memoryCategory = MemoryCategory.NOTE,
+                        memoryTitle = "",
+                        memoryContent = ""
+                    )
+                }
+            }
+
+            // Screen scroll commands respecting user's Scroll Limit setting
+            if (lower.contains("স্ক্রল") || lower.contains("scroll")) {
+                val dirCmd = if (lower.contains("উপর") || lower.contains("উপরে") || lower.contains("up")) "scroll_up" else "scroll_down"
+                val reply = if (language == SathiLanguage.BN) {
+                    if (dirCmd == "scroll_up") "ঠিক আছে বস, স্ক্রিন উপরে স্ক্রল করছি।" else "ঠিক আছে বস, স্ক্রিন নিচে স্ক্রল করছি।"
+                } else {
+                    if (dirCmd == "scroll_up") "Scrolling up for you, Boss." else "Scrolling down for you, Boss."
+                }
+                return SathiTurnResult(
+                    replyText = reply,
+                    mood = SathiMood.HAPPY,
+                    actionType = PhoneActionType.SCREEN_UI_ACTION,
+                    actionParam = dirCmd,
+                    secondaryParam = "",
+                    shouldSaveMemory = false,
+                    memoryCategory = MemoryCategory.NOTE,
+                    memoryTitle = "",
+                    memoryContent = ""
+                )
+            }
+
             // Title / Caption typing on active external screen (e.g., YouTube upload, Facebook post)
             val titleMatch = Regex("(?:টাইটেল|ক্যাপশন|caption|title)\\s*(?:লেখো|লিখো|লিখে দাও|write|set)?\\s*[:\\-]?\\s*(.+)$", RegexOption.IGNORE_CASE).find(text)
             if (titleMatch != null) {
                 val content = titleMatch.groupValues.getOrNull(1)?.trim().orEmpty()
                 if (content.isNotBlank()) {
                     val reply = if (language == SathiLanguage.BN) {
-                        "জি বস, স্ক্রিনে '$content' লিখে দিচ্ছি।"
+                        "ঠিক আছে বস, স্ক্রিনে '$content' লিখে দিচ্ছি।"
                     } else {
                         "Boss, writing '$content' on screen."
                     }
@@ -1521,7 +1628,7 @@ class SathiAiService(
                 }
                 if (actionCmd != null) {
                     val reply = if (language == SathiLanguage.BN) {
-                        "জি বস, স্ক্রিনের '$actionCmd' বাটনে চাপ দিচ্ছি।"
+                        "ঠিক আছে বস, স্ক্রিনের '$actionCmd' বাটনে চাপ দিচ্ছি।"
                     } else {
                         "Boss, tapping '$actionCmd' on your screen."
                     }

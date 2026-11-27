@@ -213,6 +213,9 @@ private fun SathiMainShell(
                             openLookAndFeelInSettings = false
                             selectedTab = SathiDestination.SETTINGS
                         },
+                        onOpenLive = { selectedTab = SathiDestination.LIVE },
+                        onOpenMemory = { selectedTab = SathiDestination.MEMORY },
+                        onMinimizeLive = { selectedTab = SathiDestination.VOICE },
                         onOpenAdmin = { showAdminPanel = true },
                         modifier = Modifier.weight(1f)
                     )
@@ -254,6 +257,9 @@ private fun SathiMainShell(
                         openLookAndFeelInSettings = false
                         selectedTab = SathiDestination.SETTINGS
                     },
+                    onOpenLive = { selectedTab = SathiDestination.LIVE },
+                    onOpenMemory = { selectedTab = SathiDestination.MEMORY },
+                    onMinimizeLive = { selectedTab = SathiDestination.VOICE },
                     onOpenAdmin = { showAdminPanel = true },
                     modifier = Modifier
                         .fillMaxSize()
@@ -273,6 +279,9 @@ private fun SathiTabContent(
     openLookAndFeelInitially: Boolean,
     onOpenThemes: () -> Unit,
     onJumpToSettings: () -> Unit,
+    onOpenLive: () -> Unit,
+    onOpenMemory: () -> Unit,
+    onMinimizeLive: () -> Unit,
     onOpenAdmin: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -296,11 +305,15 @@ private fun SathiTabContent(
                 viewModel = viewModel,
                 onOpenAdminPanel = onOpenAdmin,
                 onOpenThemes = onOpenThemes,
+                onOpenLive = onOpenLive,
+                onOpenMemory = onOpenMemory,
+                onOpenSettings = onJumpToSettings,
                 modifier = Modifier.fillMaxSize()
             )
             SathiDestination.LIVE -> LiveVoiceChatScreen(
                 viewModel = viewModel,
                 onOpenAdminPanel = onOpenAdmin,
+                onMinimizeToHome = onMinimizeLive,
                 modifier = Modifier.fillMaxSize()
             )
             SathiDestination.STUDIO -> StudioToolsScreen(

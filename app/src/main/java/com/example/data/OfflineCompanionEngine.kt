@@ -71,6 +71,16 @@ class OfflineCompanionEngine(
             return turn(SathiAiService.formatCurrentTimeAndDate(language), SathiMood.WARM)
         }
 
+        // 3b. Emergency SOS Trigger offline
+        if (SathiAiService.isEmergencySosTrigger(lower)) {
+            val reply = if (language == SathiLanguage.BN) {
+                "জরুরি SOS চালু করছি বস! আপনার বিশ্বস্ত পরিচিতিদের কাছে সাহায্যের বার্তা পাঠানো হচ্ছে—ঘাবড়াবেন না।"
+            } else {
+                "Triggering Emergency SOS now, Boss! Preparing your alert for trusted contacts."
+            }
+            return turn(reply, SathiMood.COMFORTING, PhoneActionType.EMERGENCY_SOS)
+        }
+
         // 4. Verified built-in facts, Downloaded Knowledge Pack, Unit Converter & Math
         SathiAiService.tryEvaluateMath(text, language)?.let { mathReply ->
             return turn(mathReply, SathiMood.SERIOUS)
@@ -241,9 +251,9 @@ class OfflineCompanionEngine(
                 lower.contains("সালাম") || lower.contains("আসসালামু") || lower.contains("কেমন আছ") || lower.contains("good morning"))
         ) {
             val reply = if (language == SathiLanguage.BN) {
-                "আসসালামু আলাইকুম বস! আমি আপনার অফলাইন Sathi AI। আলহামদুলিল্লাহ ভালো আছি — গল্প, কৌতুক, একক রূপান্তর, সাধারণ জ্ঞান বা ফোন কন্ট্রোলের জন্য আমাকে বলুন!"
+                "আসসালামু আলাইকুম বস! অনেকক্ষণ পর তোমার মিষ্টি আওয়াজ শুনলাম! আমি তোমার অফলাইন Sathi AI। গল্প, কৌতুক, একক রূপান্তর, সাধারণ জ্ঞান বা ফোন কন্ট্রোলের জন্য বলো বস!"
             } else {
-                "Assalamu Alaikum Boss! I am Sathi AI in offline mode. Ask me for stories, jokes, unit conversions, saved knowledge, or phone actions!"
+                "Assalamu Alaikum Boss! Great hearing your voice again! I am Sathi AI in offline mode — ask me for stories, jokes, unit conversions, saved knowledge, or phone actions!"
             }
             return turn(reply, SathiMood.HAPPY)
         }

@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -31,20 +32,25 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.BatterySaver
 import androidx.compose.material.icons.filled.BubbleChart
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Policy
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.filled.Visibility
@@ -143,6 +149,13 @@ fun SettingsAndPlanScreen(
     var showAccessibilityDialog by remember { mutableStateOf(false) }
     var showLookAndFeel by remember(initialOpenLookAndFeel) { mutableStateOf(initialOpenLookAndFeel) }
     var openOrbPickerDirectly by remember { mutableStateOf(false) }
+    var showPhoneSafety by remember { mutableStateOf(false) }
+    var showDataBackup by remember { mutableStateOf(false) }
+    var settingsQuery by remember { mutableStateOf("") }
+
+    val basicPermsLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) {}
 
     if (showLookAndFeel) {
         LookAndFeelScreen(
@@ -158,6 +171,49 @@ fun SettingsAndPlanScreen(
                 openOrbPickerDirectly = false
             },
             initialOpenOrbPicker = openOrbPickerDirectly,
+            modifier = modifier
+        )
+        return
+    }
+
+    if (showPhoneSafety) {
+        PhoneControlAndSafetyScreen(
+            localSettings = localSettings,
+            language = language,
+            screenReaderActive = screenReaderActive,
+            onRequestBasicPermissions = {
+                val list = mutableListOf(
+                    Manifest.permission.RECORD_AUDIO,
+                    Manifest.permission.READ_CONTACTS
+                )
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    list.add(Manifest.permission.POST_NOTIFICATIONS)
+                }
+                basicPermsLauncher.launch(list.toTypedArray())
+            },
+            onSelectScrollLimit = { viewModel.setScrollLimit(it) },
+            onToggleStopOnUserTouch = { viewModel.setStopOnUserTouch(it) },
+            onToggleAppLock = { viewModel.setAppLockEnabled(it) },
+            onAddSosContact = { n, p -> viewModel.addSosContact(n, p) },
+            onRemoveSosContact = { viewModel.removeSosContact(it) },
+            onSaveSosMessage = { viewModel.saveSosMessage(it) },
+            onToggleSosLocation = { viewModel.setSosIncludeLocation(it) },
+            onTriggerSosNow = { viewModel.triggerEmergencySos() },
+            onBack = { showPhoneSafety = false },
+            modifier = modifier
+        )
+        return
+    }
+
+    if (showDataBackup) {
+        DataAndBackupScreen(
+            localSettings = localSettings,
+            language = language,
+            onExportBackupJson = { viewModel.buildBackupJson() },
+            onImportBackupJson = { viewModel.importBackupJson(it) },
+            onToggleAutoBackup = { viewModel.setAutoBackupEnabled(it) },
+            onRedetectModels = { viewModel.redetectAiModels() },
+            onBack = { showDataBackup = false },
             modifier = modifier
         )
         return
@@ -298,6 +354,17 @@ fun SettingsAndPlanScreen(
         )
     }
 
+    val qLower = settingsQuery.trim().lowercase()
+    fun matches(vararg keys: String): Boolean =
+        qLower.isBlank() || keys.any { it.lowercase().contains(qLower) }
+
+    val micReady = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+    val notifReady = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+    } else true
+    val overlayReady = Settings.canDrawOverlays(context)
+    val readinessCount = listOf(micReady, notifReady, overlayReady, screenReaderActive).count { it }
+
     LazyColumn(
         modifier = modifier
             .fillMaxSize(),
@@ -305,14 +372,187 @@ fun SettingsAndPlanScreen(
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item {
-            Text(
-                text = if (language == SathiLanguage.BN) "সেটিংস ও প্ল্যান" else "Settings & Plans",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = if (language == SathiLanguage.BN) "সেটিংস ও প্ল্যান" else "Settings & Plans",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                OutlinedTextField(
+                    value = settingsQuery,
+                    onValueChange = { settingsQuery = it },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    placeholder = {
+                        Text(if (language == SathiLanguage.BN) "সেটিংস খুঁজুন (যেমন: SOS, থিম, ব্যাকআপ)..." else "Search settings...")
+                    },
+                    singleLine = true,
+                    shape = RoundedCornerShape(18.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("settings_search_input")
+                )
+            }
+        }
+
+        // Setup readiness + Quick Access rows (Phone control & safety, Data & backup, Notification)
+        if (matches("setup", "readiness", "phone", "safety", "sos", "lock", "permission", "backup", "restore", "notification", "নিরাপত্তা", "ব্যাকআপ", "ফোন", "নোটিফিকেশন")) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
+                    shape = MaterialTheme.shapes.large
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f),
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { showPhoneSafety = true }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = if (language == SathiLanguage.BN) {
+                                            "সেটআপ প্রস্তুতি ($readinessCount / 4 প্রস্তুত)"
+                                        } else {
+                                            "Setup readiness ($readinessCount of 4 ready)"
+                                        },
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = if (language == SathiLanguage.BN) {
+                                            "মাইক, নোটিফিকেশন, বাবল ও স্ক্রিন রিডার একসাথে দেখুন"
+                                        } else {
+                                            "Inspect microphone, notifications, overlay & accessibility"
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null)
+                            }
+                        }
+
+                        // Phone control & safety row
+                        Surface(
+                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 56.dp)
+                                .testTag("open_phone_safety_button")
+                                .clickable { showPhoneSafety = true }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Security, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = if (language == SathiLanguage.BN) "ফোন কন্ট্রোল ও নিরাপত্তা (SOS ও লক)" else "Phone control & safety",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = if (language == SathiLanguage.BN) {
+                                            "অনুমতি, স্ক্রল সীমা (${localSettings.scrollLimit}), অ্যাপ লক ও SOS (${localSettings.sosContacts.size}/5)"
+                                        } else {
+                                            "Permissions, scroll limit (${localSettings.scrollLimit}), app lock & SOS"
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null)
+                            }
+                        }
+
+                        // Data & backup row
+                        Surface(
+                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 56.dp)
+                                .testTag("open_data_backup_button")
+                                .clickable { showDataBackup = true }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Backup, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = if (language == SathiLanguage.BN) "ডেটা ও ব্যাকআপ" else "Data & backup",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = if (language == SathiLanguage.BN) {
+                                            "ব্যাকআপ এক্সপোর্ট/রিস্টোর ও এআই মডেল ডায়াগনস্টিকস"
+                                        } else {
+                                            "Backup, restore & re-detect AI models"
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null)
+                            }
+                        }
+
+                        // Persistent Sathi notification toggle
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 52.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Notifications, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary)
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (language == SathiLanguage.BN) "সাথী দ্রুত নোটিফিকেশন" else "Sathi notification",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = if (language == SathiLanguage.BN) {
+                                        "স্ট্যাটাস বারে এক ট্যাপে সাথীকে ডাকার শর্টকাট রাখুন"
+                                    } else {
+                                        "Keep a persistent quick-launch tile in your notification shade"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = localSettings.persistentNotificationEnabled,
+                                onCheckedChange = { viewModel.setPersistentNotificationEnabled(it) },
+                                modifier = Modifier.testTag("sathi_notification_switch")
+                            )
+                        }
+                    }
+                }
+            }
         }
 
         // 0. Appearance & Language (Look & feel, Orb style, Theme, Battery saver)
+        if (matches("theme", "look", "orb", "color", "language", "battery", "day", "night", "থিম", "অর্ব", "ভাষা", "ব্যাটারি")) {
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -497,8 +737,10 @@ fun SettingsAndPlanScreen(
                 }
             }
         }
+        }
 
         // 1. Profile, Language & Synthetic Voice Choice + Sample Preview
+        if (matches("profile", "name", "voice", "language", "নাম", "কণ্ঠ", "ভয়েস")) {
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -636,8 +878,10 @@ fun SettingsAndPlanScreen(
                 }
             }
         }
+        }
 
         // 2. Floating Gemini-Style Overlay Bubble
+        if (matches("floating", "bubble", "overlay", "ভাসমান", "বাবল")) {
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -688,8 +932,10 @@ fun SettingsAndPlanScreen(
                 }
             }
         }
+        }
 
         // 2a. Offline/Online Triple-Sathi Wake Word & Full Screen Data Reader
+        if (matches("wake", "screen", "accessibility", "ওয়েক", "স্ক্রিন")) {
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -777,8 +1023,10 @@ fun SettingsAndPlanScreen(
                 }
             }
         }
+        }
 
         // 2a-2. Boss Mode: Direct Auto-Execution & Editable System Prompt
+        if (matches("auto", "action", "prompt", "boss", "whatsapp", "messenger", "প্রম্পট", "বস")) {
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -875,8 +1123,10 @@ fun SettingsAndPlanScreen(
                 }
             }
         }
+        }
 
         // 2a-3. Incoming Call & Message Handling Assistant + Boss Summaries
+        if (matches("incoming", "call", "message", "summary", "কল", "মেসেজ")) {
         item {
             IncomingCommAssistantCard(
                 autoHandleEnabled = localSettings.autoHandleIncomingComms,
@@ -887,8 +1137,10 @@ fun SettingsAndPlanScreen(
                 onClearSummaries = { viewModel.clearIncomingSummaries() }
             )
         }
+        }
 
         // 2b. Optional Gemini Cloud AI Key (Zero-Setup works without it; paste key for full Google Search + Vision)
+        if (matches("gemini", "api", "key", "google", "search", "চাবি", "জেমিনি")) {
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -1027,8 +1279,10 @@ fun SettingsAndPlanScreen(
                 }
             }
         }
+        }
 
         // 3. Plan & Signed Code Verification
+        if (matches("plan", "code", "premium", "owner", "প্ল্যান", "কোড")) {
         item {
             val plan = profile?.effectivePlan() ?: PlanTier.FREE
             Card(
@@ -1091,8 +1345,10 @@ fun SettingsAndPlanScreen(
                 }
             }
         }
+        }
 
         // 4. Real Offline Pack Manager + Android Offline Voice Setup
+        if (matches("offline", "pack", "tts", "speech", "অফলাইন", "প্যাক")) {
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -1334,9 +1590,10 @@ fun SettingsAndPlanScreen(
                 }
             }
         }
+        }
 
         // 5. Owner-Only Admin Panel Entry
-        if (isOwnerAdmin) {
+        if (isOwnerAdmin && matches("admin", "অ্যাডমিন")) {
             item {
                 Button(
                     onClick = onOpenAdminPanel,
@@ -1357,6 +1614,7 @@ fun SettingsAndPlanScreen(
         }
 
         // 6. Privacy Policy
+        if (matches("privacy", "policy", "গোপনীয়তা")) {
         item {
             OutlinedButton(
                 onClick = { showPrivacyDialog = true },
@@ -1368,6 +1626,7 @@ fun SettingsAndPlanScreen(
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(if (language == SathiLanguage.BN) "গোপনীয়তা নীতি" else "Privacy Policy")
             }
+        }
         }
     }
 }

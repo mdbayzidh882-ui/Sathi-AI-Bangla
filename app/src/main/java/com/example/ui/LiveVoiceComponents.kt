@@ -53,6 +53,7 @@ import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.PhotoCamera
@@ -418,6 +419,7 @@ fun DancingVoiceOrb(
 fun LiveVoiceChatScreen(
     viewModel: SathiViewModel,
     onOpenAdminPanel: () -> Unit = {},
+    onMinimizeToHome: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -437,6 +439,7 @@ fun LiveVoiceChatScreen(
     val isOffline = viewModel.isUsingOfflineMode()
     val isOnline = viewModel.isDeviceNetworkOnline()
     val lastAssistantMsg = messages.lastOrNull { !it.isUser }
+    val lastUserMsg = messages.lastOrNull { it.isUser }
 
     var useFrontCamera by remember { mutableStateOf(false) }
     var showQuickKeyDialog by remember { mutableStateOf(false) }
@@ -781,44 +784,168 @@ fun LiveVoiceChatScreen(
                         muted = voiceState.muted,
                         liveActive = voiceState.liveSessionActive,
                         onClick = handleOrbTap,
-                        orbSize = 112.dp,
+                        orbSize = 140.dp,
                         buttonTestTag = "live_screen_orb_button",
                         orbStyle = localSettings.orbStyle,
                         reduceMotion = localSettings.reduceMotion || localSettings.batterySaver,
                         animationStyle = localSettings.animationStyle
                     )
 
-                    val orbStatusText = when {
-                        isThinking -> if (language == SathiLanguage.BN) "বস, আমি উত্তর তৈরি করছি..." else "Boss, Sathi is thinking..."
-                        voiceState.speaking -> if (language == SathiLanguage.BN) "Sathi AI কথা বলছে..." else "Sathi AI is speaking..."
-                        voiceState.muted -> if (language == SathiLanguage.BN) "মাইক মিউট করা আছে" else "Mic is muted"
-                        voiceState.listening -> if (language == SathiLanguage.BN) "বলুন বস, আমি মন দিয়ে শুনছি..." else "Speak Boss, I'm listening closely..."
-                        else -> if (language == SathiLanguage.BN) "কথা বলতে মাঝের গোল বাটনে চাপ দিন" else "Tap the orb to start live voice"
+                    val statusLabel = when {
+                        isThinking -> if (language == SathiLanguage.BN) "Thinking • ভাবছি..." else "Thinking"
+                        voiceState.speaking -> if (language == SathiLanguage.BN) "Speaking • সাথী বলছে" else "Speaking"
+                        voiceState.muted -> if (language == SathiLanguage.BN) "Muted • মিউট" else "Muted"
+                        voiceState.listening -> if (language == SathiLanguage.BN) "Listening • শুনছি বস" else "Listening"
+                        else -> if (language == SathiLanguage.BN) "Live Voice Ready • অরবে ট্যাপ করুন" else "Tap orb to talk"
                     }
 
-                    Text(
-                        text = orbStatusText,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
+                    Surface(
                         color = when {
-                            voiceState.speaking -> SathiSpeakingOrbTeal
-                            voiceState.listening -> SathiListeningOrbPink
-                            else -> Color(0xFFE3F2FD)
+                            voiceState.speaking -> Color(0x332DD4BF)
+                            voiceState.listening -> Color(0x33F472B6)
+                            isThinking -> Color(0x33FBBF24)
+                            else -> Color(0x2838BDF8)
                         },
-                        textAlign = TextAlign.Center
-                    )
+                        shape = RoundedCornerShape(50),
+                        border = BorderStroke(1.dp, Color(0x44FFFFFF))
+                    ) {
+                        Text(
+                            text = statusLabel,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = when {
+                                voiceState.speaking -> SathiSpeakingOrbTeal
+                                voiceState.listening -> SathiListeningOrbPink
+                                else -> Color(0xFFE3F2FD)
+                            },
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                        )
+                    }
 
-                    if (voiceState.partialTranscript.isNotBlank()) {
-                        Surface(
-                            color = Color(0x3300E5FF),
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier.fillMaxWidth()
+                    // Nova-style Floating Dark-Glass Transcript Card (YOU & SATHI live lines)
+                    Surface(
+                        color = Color(0x880B132B),
+                        border = BorderStroke(1.dp, Color(0x3338BDF8)),
+                        shape = RoundedCornerShape(20.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("live_transcript_card")
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
+                            val youText = voiceState.partialTranscript.ifBlank {
+                                lastUserMsg?.text.orEmpty()
+                            }.ifBlank {
+                                if (language == SathiLanguage.BN) "আপনার কথা এখানে লাইভ দেখা যাবে..." else "Speak naturally — your words appear here..."
+                            }
                             Text(
-                                text = "🎙️ ${voiceState.partialTranscript}",
+                                text = if (language == SathiLanguage.BN) "আপনি (YOU)" else "YOU",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF7DD3FC)
+                            )
+                            Text(
+                                text = youText,
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = Color.White,
-                                modifier = Modifier.padding(12.dp)
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis
+                            )
+
+                            Surface(
+                                color = Color(0x22FFFFFF),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(1.dp)
+                            ) {}
+
+                            val sathiText = when {
+                                isThinking -> if (language == SathiLanguage.BN) "বস, তোমার জন্য উত্তর সাজাচ্ছি..." else "Thinking, Boss..."
+                                lastAssistantMsg != null -> lastAssistantMsg.text
+                                else -> if (language == SathiLanguage.BN) "বলো বস, আমি শুনছি!" else "Speak Boss, I'm listening!"
+                            }
+                            Text(
+                                text = if (language == SathiLanguage.BN) "সাথী (SATHI)" else "SATHI",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = SathiSpeakingOrbTeal
+                            )
+                            Text(
+                                text = sathiText,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = Color(0xFFF1F5F9),
+                                maxLines = 4,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+
+                    // Bottom 3-button Live Controls: Mic Toggle, Minimize ↓, Red Close ✕
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterHorizontally),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        FilledIconButton(
+                            onClick = {
+                                if (voiceState.liveSessionActive) {
+                                    viewModel.toggleLiveMute()
+                                } else {
+                                    handleOrbTap()
+                                }
+                            },
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = if (voiceState.muted) Color(0xFF334155) else Color(0xFF0EA5E9),
+                                contentColor = Color.White
+                            ),
+                            modifier = Modifier
+                                .size(54.dp)
+                                .testTag("live_mic_toggle_button")
+                        ) {
+                            Icon(
+                                imageVector = if (voiceState.muted) Icons.Default.MicOff else Icons.Default.Mic,
+                                contentDescription = if (voiceState.muted) "Unmute microphone" else "Mute or start microphone"
+                            )
+                        }
+
+                        FilledIconButton(
+                            onClick = onMinimizeToHome,
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = Color(0xFF1E293B),
+                                contentColor = Color.White
+                            ),
+                            modifier = Modifier
+                                .size(54.dp)
+                                .testTag("live_minimize_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.KeyboardArrowDown,
+                                contentDescription = if (language == SathiLanguage.BN) "হোমে ফিরে যান" else "Minimize to Home"
+                            )
+                        }
+
+                        FilledIconButton(
+                            onClick = {
+                                if (voiceState.speaking) {
+                                    viewModel.interruptSpeakingAndListen()
+                                } else {
+                                    viewModel.stopLiveVoiceSession()
+                                }
+                            },
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = Color.White
+                            ),
+                            modifier = Modifier
+                                .size(54.dp)
+                                .testTag("live_close_button")
+                        ) {
+                            Icon(
+                                imageVector = if (voiceState.speaking) Icons.Default.Stop else Icons.Default.Close,
+                                contentDescription = if (language == SathiLanguage.BN) "লাইভ বন্ধ করুন" else "Close live session"
                             )
                         }
                     }
@@ -845,49 +972,6 @@ fun LiveVoiceChatScreen(
                                 )
                             }
                         )
-
-                        OutlinedButton(
-                            onClick = { viewModel.toggleLiveMute() },
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                            modifier = Modifier.defaultMinSize(minHeight = 48.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (voiceState.muted) Icons.Default.Mic else Icons.Default.MicOff,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                if (language == SathiLanguage.BN) {
-                                    if (voiceState.muted) "আনমিউট" else "মিউট"
-                                } else {
-                                    if (voiceState.muted) "Unmute" else "Mute"
-                                }
-                            )
-                        }
-
-                        if (voiceState.speaking) {
-                            Button(
-                                onClick = { viewModel.interruptSpeakingAndListen() },
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                                modifier = Modifier.defaultMinSize(minHeight = 48.dp)
-                            ) {
-                                Icon(Icons.Default.Stop, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(if (language == SathiLanguage.BN) "থামো" else "Stop")
-                            }
-                        } else if (voiceState.liveSessionActive) {
-                            FilledIconButton(
-                                onClick = { viewModel.stopLiveVoiceSession() },
-                                colors = IconButtonDefaults.filledIconButtonColors(
-                                    containerColor = MaterialTheme.colorScheme.error,
-                                    contentColor = MaterialTheme.colorScheme.onError
-                                ),
-                                modifier = Modifier.size(48.dp)
-                            ) {
-                                Icon(Icons.Default.Close, contentDescription = "End live voice session")
-                            }
-                        }
                     }
 
                     // Live Camera (Front/Back) & Live Screen Share controls

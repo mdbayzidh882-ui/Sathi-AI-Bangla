@@ -171,6 +171,138 @@ private val SathiSunsetLightColorScheme = lightColorScheme(
     outline = Color(0xFFF2CBB5)
 )
 
+private val SathiAmoledBlackColorScheme = darkColorScheme(
+    primary = Color(0xFF38BDF8),
+    onPrimary = Color(0xFF001829),
+    primaryContainer = Color(0xFF0A2438),
+    onPrimaryContainer = Color(0xFFE0F2FE),
+    secondary = Color(0xFFFACC15),
+    onSecondary = Color(0xFF241B00),
+    secondaryContainer = Color(0xFF201A08),
+    onSecondaryContainer = Color(0xFFFEF08A),
+    tertiary = Color(0xFF2DD4BF),
+    onTertiary = Color(0xFF002924),
+    tertiaryContainer = Color(0xFF082926),
+    onTertiaryContainer = Color(0xFFCCFBF1),
+    background = Color(0xFF000000),
+    onBackground = Color(0xFFF8FAFC),
+    surface = Color(0xFF080A0E),
+    onSurface = Color(0xFFF8FAFC),
+    surfaceVariant = Color(0xFF101319),
+    onSurfaceVariant = Color(0xFF94A3B8),
+    outline = Color(0xFF263142)
+)
+
+private val SathiMintLightColorScheme = lightColorScheme(
+    primary = Color(0xFF059669),
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFFD1FAE5),
+    onPrimaryContainer = Color(0xFF064E3B),
+    secondary = Color(0xFF0D9488),
+    onSecondary = Color.White,
+    secondaryContainer = Color(0xFFCCFBF1),
+    onSecondaryContainer = Color(0xFF134E4A),
+    tertiary = Color(0xFF0284C7),
+    onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFE0F2FE),
+    onTertiaryContainer = Color(0xFF0C4A6E),
+    background = Color(0xFFF3FCF8),
+    onBackground = Color(0xFF0B251D),
+    surface = Color(0xFFFFFFFF),
+    onSurface = Color(0xFF0B251D),
+    surfaceVariant = Color(0xFFE4F7EF),
+    onSurfaceVariant = Color(0xFF355E50),
+    outline = Color(0xFF99D8C2)
+)
+
+private val SathiLiquidGlassColorScheme = darkColorScheme(
+    primary = Color(0xFF67E8F9),
+    onPrimary = Color(0xFF04222B),
+    primaryContainer = Color(0xFF123B59),
+    onPrimaryContainer = Color(0xFFCFFAFE),
+    secondary = Color(0xFFA5B4FC),
+    onSecondary = Color(0xFF131942),
+    secondaryContainer = Color(0xFF1D2759),
+    onSecondaryContainer = Color(0xFFE0E7FF),
+    tertiary = Color(0xFFF472B6),
+    onTertiary = Color(0xFF3A0620),
+    tertiaryContainer = Color(0xFF4C1736),
+    onTertiaryContainer = Color(0xFFFCE7F3),
+    background = Color(0xFF081429),
+    onBackground = Color(0xFFF0F9FF),
+    surface = Color(0xFF0E1E3B),
+    onSurface = Color(0xFFF0F9FF),
+    surfaceVariant = Color(0xFF15294C),
+    onSurfaceVariant = Color(0xFFB4CCE8),
+    outline = Color(0xFF3A5C8A)
+)
+
+private val SathiFrostLightColorScheme = lightColorScheme(
+    primary = Color(0xFF0284C7),
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFFE0F2FE),
+    onPrimaryContainer = Color(0xFF082F49),
+    secondary = Color(0xFF3B82F6),
+    onSecondary = Color.White,
+    secondaryContainer = Color(0xFFDBEAFE),
+    onSecondaryContainer = Color(0xFF1E3A8A),
+    tertiary = Color(0xFF06B6D4),
+    onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFCFFAFE),
+    onTertiaryContainer = Color(0xFF164E63),
+    background = Color(0xFFF4FAFF),
+    onBackground = Color(0xFF0F2436),
+    surface = Color(0xFFFFFFFF),
+    onSurface = Color(0xFF0F2436),
+    surfaceVariant = Color(0xFFE7F3FE),
+    onSurfaceVariant = Color(0xFF44627A),
+    outline = Color(0xFFB5D6EE)
+)
+
+private val SathiSoftLightColorScheme = lightColorScheme(
+    primary = Color(0xFF6366F1),
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFFE0E7FF),
+    onPrimaryContainer = Color(0xFF1E1B4B),
+    secondary = Color(0xFFEC4899),
+    onSecondary = Color.White,
+    secondaryContainer = Color(0xFFFCE7F3),
+    onSecondaryContainer = Color(0xFF500724),
+    tertiary = Color(0xFF14B8A6),
+    onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFCCFBF1),
+    onTertiaryContainer = Color(0xFF134E4A),
+    background = Color(0xFFF8FAFC),
+    onBackground = Color(0xFF182132),
+    surface = Color(0xFFFFFFFF),
+    onSurface = Color(0xFF182132),
+    surfaceVariant = Color(0xFFEEF2F8),
+    onSurfaceVariant = Color(0xFF526079),
+    outline = Color(0xFFCBD5E1)
+)
+
+private val SathiIceBlueLightColorScheme = lightColorScheme(
+    primary = Color(0xFF0EA5E9),
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFFD9F3FF),
+    onPrimaryContainer = Color(0xFF07314A),
+    secondary = Color(0xFF2563EB),
+    onSecondary = Color.White,
+    secondaryContainer = Color(0xFFDBEAFE),
+    onSecondaryContainer = Color(0xFF1E3A8A),
+    tertiary = Color(0xFF0891B2),
+    onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFCFFAFE),
+    onTertiaryContainer = Color(0xFF164E63),
+    background = Color(0xFFEEF6FF),
+    onBackground = Color(0xFF0C2239),
+    surface = Color(0xFFFFFFFF),
+    onSurface = Color(0xFF0C2239),
+    surfaceVariant = Color(0xFFE0EEFF),
+    onSurfaceVariant = Color(0xFF3E5E80),
+    outline = Color(0xFFA7CBF2)
+)
+
 val SathiShapes = Shapes(
     small = RoundedCornerShape(14.dp),
     medium = RoundedCornerShape(20.dp),
@@ -186,6 +318,12 @@ fun sathiColorSchemeFor(darkTheme: Boolean, colorTheme: SathiColorTheme): ColorS
         SathiColorTheme.ROSE_CRIMSON -> SathiRoseColorScheme
         SathiColorTheme.SUNSET_AMBER -> if (darkTheme) SathiDarkColorScheme else SathiSunsetLightColorScheme
         SathiColorTheme.MIDNIGHT_NIGHT -> SathiDarkColorScheme
+        SathiColorTheme.AMOLED_BLACK -> SathiAmoledBlackColorScheme
+        SathiColorTheme.MINT -> if (darkTheme) SathiEmeraldColorScheme else SathiMintLightColorScheme
+        SathiColorTheme.LIQUID_GLASS -> SathiLiquidGlassColorScheme
+        SathiColorTheme.FROST -> if (darkTheme) SathiOceanColorScheme else SathiFrostLightColorScheme
+        SathiColorTheme.SOFT_LIGHT -> if (darkTheme) SathiDarkColorScheme else SathiSoftLightColorScheme
+        SathiColorTheme.ICE_BLUE -> if (darkTheme) SathiOceanColorScheme else SathiIceBlueLightColorScheme
         SathiColorTheme.GOLDEN_DAY -> if (darkTheme) SathiDarkColorScheme else SathiLightColorScheme
     }
 }
@@ -246,6 +384,48 @@ fun sathiHorizonBackgroundBrush(
                 0.00f to SathiTopNightDark,
                 0.35f to SathiNightBg,
                 1.00f to SathiBottomNightDark
+            )
+        )
+        SathiColorTheme.AMOLED_BLACK -> Brush.verticalGradient(
+            colorStops = arrayOf(
+                0.00f to Color(0xFF000000),
+                0.50f to Color(0xFF020408),
+                1.00f to Color(0xFF000000)
+            )
+        )
+        SathiColorTheme.MINT -> Brush.verticalGradient(
+            colorStops = arrayOf(
+                0.00f to Color(0xFFD6FAEB),
+                0.24f to Color(0xFFF2FCF7),
+                1.00f to Color(0xFFFFFFFF)
+            )
+        )
+        SathiColorTheme.LIQUID_GLASS -> Brush.verticalGradient(
+            colorStops = arrayOf(
+                0.00f to Color(0xFF0A1B38),
+                0.45f to Color(0xFF0F274F),
+                1.00f to Color(0xFF061024)
+            )
+        )
+        SathiColorTheme.FROST -> Brush.verticalGradient(
+            colorStops = arrayOf(
+                0.00f to Color(0xFFDCF2FF),
+                0.24f to Color(0xFFF3FAFF),
+                1.00f to Color(0xFFFFFFFF)
+            )
+        )
+        SathiColorTheme.SOFT_LIGHT -> Brush.verticalGradient(
+            colorStops = arrayOf(
+                0.00f to Color(0xFFE8EDFF),
+                0.24f to Color(0xFFF8FAFC),
+                1.00f to Color(0xFFFFFFFF)
+            )
+        )
+        SathiColorTheme.ICE_BLUE -> Brush.verticalGradient(
+            colorStops = arrayOf(
+                0.00f to Color(0xFFD2E9FF),
+                0.26f to Color(0xFFEEF6FF),
+                1.00f to Color(0xFFFFFFFF)
             )
         )
         SathiColorTheme.GOLDEN_DAY -> if (darkTheme) {

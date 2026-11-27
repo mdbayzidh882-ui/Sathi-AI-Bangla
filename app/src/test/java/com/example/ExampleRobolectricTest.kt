@@ -2,11 +2,13 @@ package com.example
 
 import android.content.Context
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.OfflineCompanionEngine
@@ -787,7 +789,7 @@ class ExampleRobolectricTest {
         // 1. Validate full Look & feel enum sets match expected choices
         assertEquals(27, com.example.core.SathiOrbStyle.entries.size)
         assertEquals(4, com.example.core.SathiAnimationStyle.entries.size)
-        assertEquals(7, com.example.core.SathiColorTheme.entries.size)
+        assertEquals(13, com.example.core.SathiColorTheme.entries.size)
 
         // 2. Validate DataStore persistence for all Look & feel settings
         val context = ApplicationProvider.getApplicationContext<Context>()
@@ -841,5 +843,104 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("orb_style_card_orbit_blue").assertIsDisplayed()
         composeTestRule.onNodeWithTag("orb_style_card_nebula").assertIsDisplayed().performClick()
         composeTestRule.waitForIdle()
+    }
+
+    @Test
+    fun `nova parity features - boss voice warmth, SOS, scroll limits, tasks, JSON backup, live transcript, and safety screens work`(): Unit = runBlocking {
+        val ai = SathiAiService()
+        val offline = OfflineCompanionEngine()
+
+        // 1. Warm Nova Bengali Boss greeting
+        val greetBn = ai.generateCompanionReply("হ্যালো", SathiLanguage.BN, "বাইজিদ", emptyList(), emptyList()).getOrThrow()
+        assertTrue(greetBn.replyText.contains("অনেকক্ষণ পর"))
+        assertTrue(greetBn.replyText.contains("বস"))
+
+        val offGreet = offline.respondOffline("সালাম", SathiLanguage.BN, "বাইজিদ")
+        assertTrue(offGreet.replyText.contains("অনেকক্ষণ পর"))
+
+        // 2. Emergency SOS trigger (online + offline)
+        val sosTurn = ai.generateCompanionReply("বিপদে আছি সাহায্য করো SOS", SathiLanguage.BN, "বাইজিদ", emptyList(), emptyList()).getOrThrow()
+        assertEquals(PhoneActionType.EMERGENCY_SOS, sosTurn.actionType)
+        val offSos = offline.respondOffline("Emergency SOS", SathiLanguage.EN, "Bayzid")
+        assertEquals(PhoneActionType.EMERGENCY_SOS, offSos.actionType)
+
+        // 3. Item tap & scroll UI commands
+        val tapCmd = ai.generateCompanionReply("২ নম্বর আইটেমে ক্লিক করো", SathiLanguage.BN, "বাইজিদ", emptyList(), emptyList()).getOrThrow()
+        assertEquals(PhoneActionType.SCREEN_UI_ACTION, tapCmd.actionType)
+        assertEquals("select_item:2", tapCmd.actionParam)
+
+        val scrollCmd = ai.generateCompanionReply("নিচে স্ক্রল করো", SathiLanguage.BN, "বাইজিদ", emptyList(), emptyList()).getOrThrow()
+        assertEquals(PhoneActionType.SCREEN_UI_ACTION, scrollCmd.actionType)
+        assertEquals("scroll_down", scrollCmd.actionParam)
+
+        // 4. DataStore persistence for scroll limit, stop-on-touch, SOS contacts (max 5), tasks, and JSON backup/restore
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = com.example.core.SathiPreferences(context)
+        prefs.setScrollLimit(10)
+        prefs.setStopOnUserTouch(false)
+        prefs.saveSosContacts(
+            (1..7).map { i -> com.example.model.SosContact(id = "c$i", name = "Friend $i", phone = "0170000000$i") }
+        )
+        prefs.saveTodayTasks(
+            listOf(com.example.model.SathiTaskItem(id = "t1", title = "Read Quran", completed = false))
+        )
+        val snap = prefs.settingsFlow.first()
+        assertEquals(10, snap.scrollLimit)
+        assertFalse(snap.stopOnUserTouch)
+        assertEquals(5, snap.sosContacts.size)
+        assertEquals(1, snap.todayTasks.size)
+
+        val exportedJson = prefs.exportBackupJson(snap)
+        assertTrue(exportedJson.contains("Read Quran"))
+        prefs.setScrollLimit(3)
+        assertEquals(3, prefs.settingsFlow.first().scrollLimit)
+        prefs.importBackupJson(exportedJson).getOrThrow()
+        assertEquals(10, prefs.settingsFlow.first().scrollLimit)
+
+        // Reset safety defaults
+        prefs.setScrollLimit(5)
+        prefs.setStopOnUserTouch(true)
+        prefs.saveSosContacts(emptyList())
+        prefs.saveTodayTasks(emptyList())
+
+        // 5. Live Voice Mode UI + Settings Phone Control & Safety + Data & Backup navigation
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("লাইভ").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("live_voice_chat_screen").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("live_transcript_card").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("live_mic_toggle_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("live_minimize_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("live_close_button").assertIsDisplayed()
+
+        composeTestRule.onNodeWithText("সেটিংস").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("settings_search_input").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("sathi_notification_switch").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("open_phone_safety_button").assertIsDisplayed().performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("phone_control_safety_screen").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("phone_control_safety_screen")
+            .performScrollToNode(hasTestTag("scroll_limit_chip_10"))
+        composeTestRule.onNodeWithTag("scroll_limit_chip_10").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("stop_on_user_touch_switch").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("app_lock_switch").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("phone_control_safety_screen")
+            .performScrollToNode(hasTestTag("send_sos_now_button"))
+        composeTestRule.onNodeWithTag("send_sos_now_button").assertIsDisplayed()
+
+        composeTestRule.onNodeWithTag("phone_control_safety_screen")
+            .performScrollToNode(hasTestTag("phone_safety_back_button"))
+        composeTestRule.onNodeWithTag("phone_safety_back_button").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("open_data_backup_button").assertIsDisplayed().performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("data_backup_screen").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("data_backup_screen")
+            .performScrollToNode(hasTestTag("export_backup_button"))
+        composeTestRule.onNodeWithTag("export_backup_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("data_backup_screen")
+            .performScrollToNode(hasTestTag("redetect_ai_models_button"))
+        composeTestRule.onNodeWithTag("redetect_ai_models_button").assertIsDisplayed()
     }
 }

@@ -55,6 +55,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AdminPanelSettings
+import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
@@ -70,23 +71,31 @@ import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.EditNote
+import androidx.compose.material.icons.filled.Emergency
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.Newspaper
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.ScreenShare
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.StopScreenShare
+import androidx.compose.material.icons.filled.TaskAlt
 import androidx.compose.material.icons.filled.ThumbDown
 import androidx.compose.material.icons.filled.ThumbDownOffAlt
 import androidx.compose.material.icons.filled.ThumbUp
@@ -107,6 +116,7 @@ import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -172,6 +182,7 @@ import com.example.model.PhoneActionType
 import com.example.model.PlanTier
 import com.example.model.SathiLanguage
 import com.example.model.SathiMood
+import com.example.model.SathiTaskItem
 import com.example.model.UserEmotion
 import com.example.overlay.SathiFloatingService
 import com.example.overlay.SathiScreenReaderService
@@ -184,6 +195,8 @@ import com.example.ui.theme.MoodWarmGlow
 import com.example.ui.theme.SathiIdleOrbRose
 import com.example.ui.theme.SathiListeningOrbPink
 import com.example.ui.theme.SathiSpeakingOrbTeal
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Path
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -192,6 +205,9 @@ fun HomeVoiceScreen(
     viewModel: SathiViewModel,
     onOpenAdminPanel: () -> Unit = {},
     onOpenThemes: () -> Unit = {},
+    onOpenLive: () -> Unit = {},
+    onOpenMemory: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -1300,10 +1316,11 @@ fun HomeVoiceScreen(
                         )
                         val plan = profile?.effectivePlan() ?: PlanTier.FREE
                         Text(
-                            text = if (language == SathiLanguage.BN) plan.labelBn else plan.labelEn,
+                            text = "${if (language == SathiLanguage.BN) plan.labelBn else plan.labelEn} • 🔥 ${localSettings.dailyStreakCount}d",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary,
-                            maxLines = 1
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -1644,6 +1661,34 @@ fun HomeVoiceScreen(
                             )
                         }
                     }
+                }
+
+                // Keep central Sathi AI logo visually unobstructed before scrolling into companion widgets
+                if (messages.size <= 1) {
+                    item(key = "center_logo_breathing_space") {
+                        Spacer(modifier = Modifier.height(160.dp))
+                    }
+                }
+
+                // Nova-style Scrollable Companion Hub, Quick Actions, Tasks, News & Daily Challenge
+                item(key = "home_companion_hub") {
+                    SathiCompanionHubSection(
+                        language = language,
+                        todayTasks = localSettings.todayTasks,
+                        dailyStreak = localSettings.dailyStreakCount,
+                        persistentNotif = localSettings.persistentNotificationEnabled,
+                        onOpenLive = onOpenLive,
+                        onOpenMemory = onOpenMemory,
+                        onOpenHistory = { scope.launch { drawerState.open() } },
+                        onOpenSettings = onOpenSettings,
+                        onOpenThemes = onOpenThemes,
+                        onToggleNotif = { viewModel.setPersistentNotificationEnabled(!localSettings.persistentNotificationEnabled) },
+                        onRunPrompt = { prompt -> viewModel.sendUserMessage(prompt, speakReply = true) },
+                        onTriggerSos = { viewModel.triggerEmergencySos() },
+                        onAddTask = { viewModel.addTodayTask(it) },
+                        onToggleTask = { viewModel.toggleTodayTask(it) },
+                        onDeleteTask = { viewModel.deleteTodayTask(it) }
+                    )
                 }
             }
         }
@@ -2669,4 +2714,391 @@ private fun CenterSathiAiLogo(
         }
     }
 }
+
+@Composable
+private fun SathiCompanionHubSection(
+    language: SathiLanguage,
+    todayTasks: List<SathiTaskItem>,
+    dailyStreak: Int,
+    persistentNotif: Boolean,
+    onOpenLive: () -> Unit,
+    onOpenMemory: () -> Unit,
+    onOpenHistory: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenThemes: () -> Unit,
+    onToggleNotif: () -> Unit,
+    onRunPrompt: (String) -> Unit,
+    onTriggerSos: () -> Unit,
+    onAddTask: (String) -> Unit,
+    onToggleTask: (String) -> Unit,
+    onDeleteTask: (String) -> Unit
+) {
+    var taskInput by remember { mutableStateOf("") }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 6.dp, bottom = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        // 1. Nova-style Interactive Hub Card with curved glowing paths linking Chat / Memory / History / Settings
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f)),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+            shape = RoundedCornerShape(22.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("home_hub_card")
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp)
+            ) {
+                val glowLineColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)
+                Canvas(
+                    modifier = Modifier
+                        .matchParentSize()
+                ) {
+                    val midX = size.width / 2f
+                    val path = Path().apply {
+                        moveTo(midX, 0f)
+                        quadraticBezierTo(size.width * 0.25f, size.height * 0.45f, size.width * 0.14f, size.height * 0.72f)
+                        moveTo(midX, 0f)
+                        quadraticBezierTo(size.width * 0.75f, size.height * 0.45f, size.width * 0.86f, size.height * 0.72f)
+                    }
+                    drawPath(path, color = glowLineColor, style = Stroke(width = 3f))
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (language == SathiLanguage.BN) "সাথী কম্প্যানিয়ন হাব" else "Sathi Companion Hub",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = if (language == SathiLanguage.BN) {
+                                    "স্ট্রিক 🔥 $dailyStreak দিন • কথা বলতে অরবে ট্যাপ করুন"
+                                } else {
+                                    "Streak 🔥 ${dailyStreak}d • Tap the orb to talk to Sathi"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        AssistChip(
+                            onClick = onToggleNotif,
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = if (persistentNotif) Icons.Default.Notifications else Icons.Default.NotificationsOff,
+                                    contentDescription = "Quick Notification Toggle",
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            },
+                            label = {
+                                Text(
+                                    text = if (persistentNotif) {
+                                        if (language == SathiLanguage.BN) "প্যানেল চালু" else "Pin ON"
+                                    } else {
+                                        if (language == SathiLanguage.BN) "পিন" else "Pin"
+                                    },
+                                    maxLines = 1
+                                )
+                            },
+                            modifier = Modifier.testTag("hub_notification_toggle")
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        HubShortcutPill(
+                            label = if (language == SathiLanguage.BN) "লাইভ চ্যাট" else "Live",
+                            icon = Icons.Default.GraphicEq,
+                            onClick = onOpenLive,
+                            modifier = Modifier.weight(1f)
+                        )
+                        HubShortcutPill(
+                            label = if (language == SathiLanguage.BN) "স্মৃতি" else "Memory",
+                            icon = Icons.Default.Psychology,
+                            onClick = onOpenMemory,
+                            modifier = Modifier.weight(1f)
+                        )
+                        HubShortcutPill(
+                            label = if (language == SathiLanguage.BN) "হিস্ট্রি" else "History",
+                            icon = Icons.Default.History,
+                            onClick = onOpenHistory,
+                            modifier = Modifier.weight(1f)
+                        )
+                        HubShortcutPill(
+                            label = if (language == SathiLanguage.BN) "কন্ট্রোল" else "Controls",
+                            icon = Icons.Default.Settings,
+                            onClick = onOpenSettings,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("hub_controls_pill")
+                        )
+                    }
+                }
+            }
+        }
+
+        // 2. Quick Actions Row
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                text = if (language == SathiLanguage.BN) "দ্রুত কাজ (Quick actions)" else "Quick actions",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.testTag("home_quick_actions_row")
+            ) {
+                item {
+                    AssistChip(
+                        onClick = onOpenLive,
+                        leadingIcon = { Icon(Icons.Default.GraphicEq, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                        label = { Text(if (language == SathiLanguage.BN) "লাইভ কথা" else "Live Voice") }
+                    )
+                }
+                item {
+                    AssistChip(
+                        onClick = { onRunPrompt(if (language == SathiLanguage.BN) "সকাল ৭টায় অ্যালার্ম দাও" else "Set alarm for 7:00") },
+                        leadingIcon = { Icon(Icons.Default.Alarm, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                        label = { Text(if (language == SathiLanguage.BN) "অ্যালার্ম" else "Set Alarm") }
+                    )
+                }
+                item {
+                    AssistChip(
+                        onClick = { onRunPrompt(if (language == SathiLanguage.BN) "ইউটিউব খোলো" else "Open YouTube") },
+                        leadingIcon = { Icon(Icons.Default.VideoLibrary, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                        label = { Text("YouTube") }
+                    )
+                }
+                item {
+                    AssistChip(
+                        onClick = { onRunPrompt(if (language == SathiLanguage.BN) "হোয়াটসঅ্যাপ খোলো" else "Open WhatsApp") },
+                        leadingIcon = { Icon(Icons.Default.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                        label = { Text("WhatsApp") }
+                    )
+                }
+                item {
+                    AssistChip(
+                        onClick = onOpenThemes,
+                        leadingIcon = { Icon(Icons.Default.Palette, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                        label = { Text(if (language == SathiLanguage.BN) "থিম ও অর্ব" else "Themes & Orb") }
+                    )
+                }
+                item {
+                    AssistChip(
+                        onClick = onTriggerSos,
+                        leadingIcon = {
+                            Icon(
+                                Icons.Default.Emergency,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        },
+                        label = { Text("SOS", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold) },
+                        modifier = Modifier.testTag("quick_action_sos")
+                    )
+                }
+            }
+        }
+
+        // 3. Today Tasks Card
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)),
+            shape = RoundedCornerShape(20.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("today_tasks_card")
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.TaskAlt, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = if (language == SathiLanguage.BN) "আজকের কাজ (Today Tasks)" else "Today Tasks",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = taskInput,
+                        onValueChange = { taskInput = it },
+                        placeholder = {
+                            Text(if (language == SathiLanguage.BN) "নতুন কাজ লিখুন..." else "Add a task for today...")
+                        },
+                        singleLine = true,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("today_task_input")
+                    )
+                    Button(
+                        onClick = {
+                            if (taskInput.isNotBlank()) {
+                                onAddTask(taskInput)
+                                taskInput = ""
+                            }
+                        },
+                        enabled = taskInput.isNotBlank(),
+                        modifier = Modifier.testTag("add_today_task_button")
+                    ) {
+                        Text(if (language == SathiLanguage.BN) "যোগ" else "Add")
+                    }
+                }
+                if (todayTasks.isEmpty()) {
+                    Text(
+                        text = if (language == SathiLanguage.BN) "আজকের কোনো কাজ যুক্ত নেই—নতুন কাজ যোগ করুন বস!" else "No tasks yet — add your plan for today!",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    todayTasks.take(6).forEach { task ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = task.completed,
+                                onCheckedChange = { onToggleTask(task.id) }
+                            )
+                            Text(
+                                text = task.title,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (task.completed) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(
+                                onClick = { onDeleteTask(task.id) },
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                Icon(Icons.Default.DeleteOutline, contentDescription = "Delete task", modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. আজকের খবর (Today's News) & Daily Challenge Row
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Card(
+                onClick = { onRunPrompt(if (language == SathiLanguage.BN) "আজকের খবর বলো" else "Tell me today's news") },
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)),
+                shape = RoundedCornerShape(18.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("today_news_card")
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Newspaper, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (language == SathiLanguage.BN) "আজকের খবর" else "Today's News",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Text(
+                        text = if (language == SathiLanguage.BN) "বাংলাদেশ ও বিশ্বের তাজা সংবাদ শুনতে ট্যাপ করুন" else "Tap for live news headlines",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2
+                    )
+                }
+            }
+
+            Card(
+                onClick = {
+                    onRunPrompt(
+                        if (language == SathiLanguage.BN) "আজকের একটি মজার ধাঁধা ও নতুন ইংরেজি শব্দ শেখাও"
+                        else "Give me today's word of the day and a short riddle"
+                    )
+                },
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f)),
+                shape = RoundedCornerShape(18.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("daily_challenge_card")
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.secondary)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (language == SathiLanguage.BN) "ডেইলি চ্যালেঞ্জ" else "Daily Challenge",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Text(
+                        text = if (language == SathiLanguage.BN) "আজকের শব্দ ও ব্রেইন ধাঁধা জানতে ট্যাপ করুন" else "Tap for Word of the Day & riddle",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HubShortcutPill(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        onClick = onClick,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+        shape = RoundedCornerShape(14.dp),
+        modifier = modifier.defaultMinSize(minHeight = 48.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Icon(icon, contentDescription = label, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
 
