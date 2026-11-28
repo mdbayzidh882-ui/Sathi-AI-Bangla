@@ -3,6 +3,7 @@ package com.example.ui
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import com.example.MainActivity
 import com.example.core.BitmapUtils
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -184,6 +185,7 @@ fun StudioToolsScreen(
             confirmButton = {
                 Button(onClick = {
                     showCameraRationale = false
+                    MainActivity.suppressNextAutoVirtualWindow()
                     cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                 }) {
                     Text(if (language == SathiLanguage.BN) "অনুমতি দিন" else "Allow")
@@ -371,8 +373,12 @@ fun StudioToolsScreen(
                                             context,
                                             Manifest.permission.CAMERA
                                         ) == PackageManager.PERMISSION_GRANTED
-                                        if (granted) cameraPreviewLauncher.launch(null)
-                                        else showCameraRationale = true
+                                        if (granted) {
+                                            MainActivity.suppressNextAutoVirtualWindow()
+                                            cameraPreviewLauncher.launch(null)
+                                        } else {
+                                            showCameraRationale = true
+                                        }
                                     },
                                     modifier = Modifier
                                         .weight(1f)
@@ -384,6 +390,7 @@ fun StudioToolsScreen(
                                 }
                                 OutlinedButton(
                                     onClick = {
+                                        MainActivity.suppressNextAutoVirtualWindow()
                                         photoPickerLauncher.launch(
                                             PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                                         )
@@ -400,6 +407,7 @@ fun StudioToolsScreen(
                             Spacer(modifier = Modifier.height(8.dp))
                             OutlinedButton(
                                 onClick = {
+                                    MainActivity.suppressNextAutoVirtualWindow()
                                     videoPickerLauncher.launch(
                                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
                                     )
@@ -459,6 +467,7 @@ fun StudioToolsScreen(
                             Spacer(modifier = Modifier.height(8.dp))
                             OutlinedButton(
                                 onClick = {
+                                    MainActivity.suppressNextAutoVirtualWindow()
                                     referenceImagePickerLauncher.launch(
                                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                                     )

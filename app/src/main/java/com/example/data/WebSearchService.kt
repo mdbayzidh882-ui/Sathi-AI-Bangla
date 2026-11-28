@@ -102,11 +102,13 @@ class WebSearchService {
 
             if (scored.isNotEmpty()) {
                 scored.take(4)
-            } else {
+            } else if (tokens.size <= 1) {
                 results
                     .distinctBy { it.url.ifBlank { it.title } }
                     .filter { src -> tokens.isEmpty() || scoreRelevance(src, tokens) >= 1 }
                     .take(3)
+            } else {
+                emptyList()
             }
         }
 

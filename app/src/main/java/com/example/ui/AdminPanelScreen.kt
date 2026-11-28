@@ -568,21 +568,29 @@ private fun AdminFeaturesTab(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         OutlinedButton(
+                            onClick = { promptInput = "" },
+                            modifier = Modifier
+                                .weight(0.9f)
+                                .testTag("admin_clear_prompt_button")
+                        ) {
+                            Text("সব মুছুন")
+                        }
+                        OutlinedButton(
                             onClick = {
                                 promptInput = SathiPreferences.DEFAULT_BOSS_SYSTEM_PROMPT
                                 onResetPrompt()
                             },
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text("ডিফল্ট রিসেট")
+                            Text("ডিফল্ট")
                         }
                         Button(
                             onClick = { onSaveSystemPrompt(promptInput) },
                             modifier = Modifier
-                                .weight(1.2f)
+                                .weight(1.1f)
                                 .testTag("save_system_prompt_button")
                         ) {
-                            Text("সংরক্ষণ করুন")
+                            Text("সংরক্ষণ")
                         }
                     }
                 }

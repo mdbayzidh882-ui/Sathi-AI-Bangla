@@ -571,6 +571,7 @@ class SathiViewModel(
                 preferences.saveCustomGeminiApiKey(cleaned, verified = false)
                 val msg = err.localizedMessage ?: if (lang == SathiLanguage.BN) "চাবি যাচাই করা যায়নি।" else "Key verification failed."
                 _googleKeyCheckState.value = GoogleKeyCheckState.Failed(msg)
+                _bannerState.value = UiBannerState.Error(msg)
             }
         }
     }
@@ -938,7 +939,7 @@ class SathiViewModel(
                     text
                 }
                 val allowMemory = (profile?.hasPremiumAccess() == true) || globalConfig.value.longTermMemoryForFree
-                val recentHistory = _messages.value.takeLast(8).map { it.isUser to it.text }
+                val recentHistory = _messages.value.dropLast(1).takeLast(8).map { it.isUser to it.text }
                 val activeEmotion = _selectedUserEmotion.value
 
                 val initialResult = aiService.generateCompanionReply(
@@ -1933,7 +1934,11 @@ class SathiViewModel(
     }
 
     private fun mapFriendlyAiError(e: Throwable, language: SathiLanguage): String {
-        val msg = e.localizedMessage.orEmpty().lowercase()
+        val raw = e.localizedMessage.orEmpty().trim()
+        val msg = raw.lowercase()
+        if (raw.isNotBlank() && (msg.contains("http ") || msg.contains("google api") || msg.contains("চাবি") || msg.contains("কোটা") || msg.contains("quota"))) {
+            return raw
+        }
         return when {
             msg.contains("timeout") ->
                 if (language == SathiLanguage.BN) "নেটওয়ার্ক ধীরগতির হওয়ায় উত্তর আসতে দেরি হচ্ছে। আবার চেষ্টা করুন।"

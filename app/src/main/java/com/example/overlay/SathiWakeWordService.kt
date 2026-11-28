@@ -38,21 +38,6 @@ class SathiWakeWordService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopSelf()
-            return START_NOT_STICKY
-        }
-
-        if (!running) {
-            running = true
-            _isRunning.value = true
-            startForegroundSafely()
-            mainHandler.postDelayed({ listenForWakePhrase() }, 350L)
-        }
-        return START_STICKY
-    }
-
     private fun startForegroundSafely() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -98,7 +83,7 @@ class SathiWakeWordService : Service() {
     }
 
     private fun listenForWakePhrase() {
-        if (!running) return
+        if (!running || pausedForActiveVoice) return
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
             Log.w(TAG, "SpeechRecognizer unavailable for wake word")
             stopSelf()
@@ -167,9 +152,46 @@ class SathiWakeWordService : Service() {
     }
 
     private fun scheduleNextCycle(delayMs: Long) {
-        if (!running) return
+        if (!running || pausedForActiveVoice) return
         mainHandler.removeCallbacksAndMessages(null)
         mainHandler.postDelayed({ listenForWakePhrase() }, delayMs)
+    }
+
+    private fun pauseRecognizerImmediately() {
+        mainHandler.removeCallbacksAndMessages(null)
+        runCatching {
+            speechRecognizer?.cancel()
+            speechRecognizer?.destroy()
+        }
+        speechRecognizer = null
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_PAUSE_FOR_VOICE) {
+            pauseRecognizerImmediately()
+            return START_STICKY
+        }
+        if (intent?.action == ACTION_RESUME_FROM_VOICE) {
+            if (running && !pausedForActiveVoice) {
+                scheduleNextCycle(450L)
+            }
+            return START_STICKY
+        }
+
+        if (!running) {
+            running = true
+            _isRunning.value = true
+            instance = this
+            startForegroundSafely()
+            if (!pausedForActiveVoice) {
+                mainHandler.postDelayed({ listenForWakePhrase() }, 350L)
+            }
+        }
+        return START_STICKY
     }
 
     private fun onWakeDetected() {
@@ -206,6 +228,7 @@ class SathiWakeWordService : Service() {
     override fun onDestroy() {
         running = false
         _isRunning.value = false
+        if (instance == this) instance = null
         mainHandler.removeCallbacksAndMessages(null)
         try {
             speechRecognizer?.destroy()
@@ -220,7 +243,15 @@ class SathiWakeWordService : Service() {
         private const val CHANNEL_ID = "sathi_wake_word_channel"
         private const val NOTIFICATION_ID = 7863
         const val ACTION_STOP = "com.example.overlay.WAKE_STOP"
+        const val ACTION_PAUSE_FOR_VOICE = "com.example.overlay.WAKE_PAUSE_FOR_VOICE"
+        const val ACTION_RESUME_FROM_VOICE = "com.example.overlay.WAKE_RESUME_FROM_VOICE"
         const val EXTRA_WAKE_TRIGGERED = "extra_wake_triggered"
+
+        @Volatile
+        private var instance: SathiWakeWordService? = null
+
+        @Volatile
+        private var pausedForActiveVoice: Boolean = false
 
         private val _isRunning = MutableStateFlow(false)
         val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
@@ -230,6 +261,27 @@ class SathiWakeWordService : Service() {
 
         @Volatile
         private var wasActiveBeforeGame: Boolean = false
+
+        fun setPausedForActiveVoice(context: Context, paused: Boolean) {
+            if (pausedForActiveVoice == paused) return
+            pausedForActiveVoice = paused
+            if (!_isRunning.value) return
+            val svc = instance
+            if (svc != null) {
+                svc.mainHandler.post {
+                    if (paused) {
+                        svc.pauseRecognizerImmediately()
+                    } else if (svc.running && !pausedForActiveVoice) {
+                        svc.scheduleNextCycle(500L)
+                    }
+                }
+            } else {
+                val action = if (paused) ACTION_PAUSE_FOR_VOICE else ACTION_RESUME_FROM_VOICE
+                runCatching {
+                    context.startService(Intent(context, SathiWakeWordService::class.java).setAction(action))
+                }
+            }
+        }
 
         fun handleGameModeChanged(context: Context, pausedForGame: Boolean) {
             if (pausedForGame) {

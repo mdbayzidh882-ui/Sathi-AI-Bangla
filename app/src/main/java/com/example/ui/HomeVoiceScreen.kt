@@ -176,6 +176,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.MainActivity
 import com.example.R
 import com.example.core.BitmapUtils
 import com.example.core.SathiAnimationStyle
@@ -448,6 +449,7 @@ fun HomeVoiceScreen(
                                 context,
                                 Manifest.permission.CAMERA
                             ) == PackageManager.PERMISSION_GRANTED
+                            MainActivity.suppressNextAutoVirtualWindow()
                             if (granted) homeCameraLauncher.launch(null)
                             else homeCameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                         }
@@ -466,6 +468,7 @@ fun HomeVoiceScreen(
                         .clip(RoundedCornerShape(14.dp))
                         .clickable {
                             showMediaSheet = false
+                            MainActivity.suppressNextAutoVirtualWindow()
                             homePhotoPickerLauncher.launch(
                                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                             )
@@ -507,6 +510,7 @@ fun HomeVoiceScreen(
                         .clip(RoundedCornerShape(14.dp))
                         .clickable {
                             showMediaSheet = false
+                            MainActivity.suppressNextAutoVirtualWindow()
                             homeVideoPickerLauncher.launch(
                                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
                             )
@@ -548,6 +552,7 @@ fun HomeVoiceScreen(
                             } else {
                                 val mgr = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager
                                 if (mgr != null) {
+                                    MainActivity.suppressNextAutoVirtualWindow()
                                     screenShareLauncher.launch(mgr.createScreenCaptureIntent())
                                 }
                             }
@@ -620,6 +625,7 @@ fun HomeVoiceScreen(
                                     viewModel.setWakeWordEnabled(true)
                                     SathiWakeWordService.startService(context)
                                 } else {
+                                    MainActivity.suppressNextAutoVirtualWindow()
                                     wakeMicPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                                 }
                             }
@@ -699,6 +705,7 @@ fun HomeVoiceScreen(
                 Button(onClick = {
                     showAccessibilityDisclosure = false
                     try {
+                        MainActivity.suppressNextAutoVirtualWindow()
                         context.startActivity(
                             Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         )
@@ -735,6 +742,7 @@ fun HomeVoiceScreen(
             confirmButton = {
                 Button(onClick = {
                     showOverlayDialog = false
+                    MainActivity.suppressNextAutoVirtualWindow()
                     val intent = Intent(
                         Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                         Uri.parse("package:${context.packageName}")
@@ -922,6 +930,16 @@ fun HomeVoiceScreen(
                         }
                         OutlinedButton(
                             onClick = {
+                                quickPromptInput = ""
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("dialog_clear_system_prompt_button")
+                        ) {
+                            Text(if (language == SathiLanguage.BN) "মুছুন" else "Clear")
+                        }
+                        OutlinedButton(
+                            onClick = {
                                 quickPromptInput = SathiPreferences.DEFAULT_BOSS_SYSTEM_PROMPT
                             },
                             modifier = Modifier.weight(1f)
@@ -972,6 +990,7 @@ fun HomeVoiceScreen(
             confirmButton = {
                 Button(onClick = {
                     showMicRationale = false
+                    MainActivity.suppressNextAutoVirtualWindow()
                     micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                 }) {
                     Text(if (language == SathiLanguage.BN) "অনুমতি দিন" else "Allow")
@@ -1016,6 +1035,7 @@ fun HomeVoiceScreen(
                     )
                     OutlinedButton(
                         onClick = {
+                            MainActivity.suppressNextAutoVirtualWindow()
                             homeRefImagePickerLauncher.launch(
                                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                             )
@@ -1192,7 +1212,10 @@ fun HomeVoiceScreen(
                                 confirm.target.equals("WhatsApp", ignoreCase = true)
                             ) {
                                 TextButton(
-                                    onClick = { contactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS) }
+                                    onClick = {
+                                        MainActivity.suppressNextAutoVirtualWindow()
+                                        contactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
+                                    }
                                 ) {
                                     Text(
                                         if (language == SathiLanguage.BN) "ফোনবুক থেকে বন্ধুর নম্বর খুঁজতে অনুমতি দিন"
@@ -1558,6 +1581,7 @@ fun HomeVoiceScreen(
                     Button(
                         onClick = {
                             try {
+                                MainActivity.suppressNextAutoVirtualWindow()
                                 val intent = Intent(
                                     Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                                     Uri.parse("package:${context.packageName}")
@@ -1858,6 +1882,7 @@ fun HomeVoiceScreen(
             liveActive = voiceState.liveSessionActive,
             muted = voiceState.muted,
             thinking = isThinking,
+            micConflictDetected = voiceState.micConflictDetected,
             autoVoiceEnabled = localSettings.autoVoiceEnabled,
             mood = activeMood,
             language = language,
@@ -1871,6 +1896,7 @@ fun HomeVoiceScreen(
             onOpenMedia = { showMediaSheet = true },
             onQuickCamera = {
                 val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+                MainActivity.suppressNextAutoVirtualWindow()
                 if (granted) homeCameraLauncher.launch(null)
                 else homeCameraPermissionLauncher.launch(Manifest.permission.CAMERA)
             },
@@ -2182,6 +2208,7 @@ private fun SathiVoiceOrbBar(
     liveActive: Boolean,
     muted: Boolean,
     thinking: Boolean,
+    micConflictDetected: Boolean,
     autoVoiceEnabled: Boolean,
     mood: SathiMood,
     language: SathiLanguage,
@@ -2398,6 +2425,11 @@ private fun SathiVoiceOrbBar(
         }
 
         val statusLabel = when {
+            micConflictDetected -> if (language == SathiLanguage.BN) {
+                "স্ক্রিন রেকর্ডার বা অন্য অ্যাপ মাইক ব্যবহার করছে — অপেক্ষা করছি..."
+            } else {
+                "Another app (e.g. Screen Recorder) holds the mic — retrying..."
+            }
             thinking -> if (language == SathiLanguage.BN) "সাথী ভাবছে..." else "Sathi is thinking..."
             muted && liveActive -> if (language == SathiLanguage.BN) "মাইক মিউট আছে • চালু করতে মাইক চাপুন" else "Mic muted • Tap mic to unmute"
             speaking && liveActive -> if (language == SathiLanguage.BN) "বলছে — কথা বললেই থেমে শুনবে" else "Speaking — talk anytime to interrupt"

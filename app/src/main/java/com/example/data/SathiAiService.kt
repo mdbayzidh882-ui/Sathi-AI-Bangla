@@ -86,12 +86,11 @@ class SathiAiService(
         var lower = text.lowercase()
 
         // -1. Handle instant barge-in ("থামো থামো...", "stop...") with optional follow-up command
-        val stopPrefixes = listOf(
-            "থামো থামো", "থামো", "থাম", "চুপ করো", "চুপ", "আরেকটা কথা বলি",
-            "stop speaking", "stop talking", "stop", "wait a second", "quiet"
-        )
-        val matchedStop = stopPrefixes.firstOrNull { lower.startsWith(it) || lower == it }
-        if (matchedStop != null) {
+        val stopMatch = Regex(
+            "^(থামো\\s*থামো|থামো|থাম|চুপ\\s*করো|চুপ|stop\\s*speaking|stop\\s*talking|stop|quiet|wait\\s*a\\s*second)(?=$|[\\s,।!?])",
+            RegexOption.IGNORE_CASE
+        ).find(lower)
+        if (stopMatch != null) {
             val remainder = text
                 .replace(Regex("^(থামো\\s*থামো|থামো|থাম|চুপ\\s*করো|চুপ|stop\\s*speaking|stop\\s*talking|stop|quiet|wait\\s*a\\s*second)[,।!?\\s]*", RegexOption.IGNORE_CASE), "")
                 .replace(Regex("^(আরেকটা\\s*কথা\\s*বলি|একটা\\s*কথা\\s*শোনো|শোনো)[,।!?\\s]*"), "")
@@ -161,7 +160,7 @@ class SathiAiService(
                     }
                     append("\nSynthesize a clear, direct, accurate answer in the user's language based strictly on these verified facts without inventing details.")
                 }
-                callGeminiRestWithSearch(
+                val geminiAttempt = callGeminiRestWithSearch(
                     apiKey = apiKey,
                     userMessage = contextPrompt,
                     language = language,
@@ -169,8 +168,10 @@ class SathiAiService(
                     memories = memories,
                     recentHistory = recentHistory,
                     userEmotion = userEmotion,
-                    customSystemPrompt = customSystemPrompt
-                )?.let { geminiGrounded ->
+                    customSystemPrompt = customSystemPrompt,
+                    preferSearch = false
+                )
+                geminiAttempt.turn?.let { geminiGrounded ->
                     return Result.success(geminiGrounded.copy(groundedSources = webSources.take(4)))
                 }
             }
@@ -200,14 +201,17 @@ class SathiAiService(
         }
 
         // 2. User's Name memory detection & recall
-        val bnNameMatch = Regex("আমার নাম\\s+(.+)").find(text)
-        val enNameMatch = Regex("my name is\\s+(.+)", RegexOption.IGNORE_CASE).find(text)
+        val bnNameMatch = Regex("^(?:ওহে\\s+)?আমার নাম(?:\\s+হলো|\\s+হল)?\\s+(.+)$").find(text)
+        val enNameMatch = Regex("^(?:hey\\s+)?my name is\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)
         val extractedName = (bnNameMatch ?: enNameMatch)?.groupValues?.getOrNull(1)
             ?.replace(Regex("[?।!]"), "")
             ?.trim()
             ?.take(40)
+        val nameWordCount = extractedName?.split(Regex("\\s+"))?.count { it.isNotBlank() } ?: 0
+        val invalidNameTokens = listOf("কী", "কি", "?", "দিয়ে", "দিয়ে", "নিয়ে", "নিয়ে", "লিখ", "লেখ", "বানা", "করে", "বল", "সম্পর্কে")
         if (!extractedName.isNullOrBlank() &&
-            !extractedName.contains("কী") && !extractedName.contains("কি") && !extractedName.contains("?")
+            nameWordCount in 1..4 &&
+            invalidNameTokens.none { extractedName.contains(it, ignoreCase = true) }
         ) {
             val reply = if (language == SathiLanguage.BN) {
                 "খুব সুন্দর নাম, $extractedName! আমি আপনার নাম মনে রাখব।"
@@ -358,31 +362,32 @@ class SathiAiService(
         }
 
         // 9. Explicit Phone Controls (Flashlight, Volume, Alarm, Timer, Calendar, Call, SMS, Open App)
-        if (lower.contains("flashlight on") || lower.contains("torch on") ||
-            ((lower.contains("ফ্ল্যাশ") || lower.contains("টর্চ") || lower.contains("লাইট")) &&
-                (lower.contains("চালু") || lower.contains("জ্বালাও") || lower.contains("অন")))
+        val isQuestion = isInformationalQuestion(text, lower)
+        if (!isQuestion && (lower.contains("flashlight on") || lower.contains("torch on") ||
+                ((lower.contains("ফ্ল্যাশ") || lower.contains("টর্চ") || lower.contains("লাইট")) &&
+                    (lower.contains("চালু") || lower.contains("জ্বালাও") || lower.contains("অন"))))
         ) {
             val reply = if (language == SathiLanguage.BN) "জি, ফ্ল্যাশলাইট চালু করছি।" else "Turning on your flashlight."
             return Result.success(simpleTurn(reply, SathiMood.WARM, PhoneActionType.FLASHLIGHT_ON))
         }
-        if (lower.contains("flashlight off") || lower.contains("torch off") ||
-            ((lower.contains("ফ্ল্যাশ") || lower.contains("টর্চ") || lower.contains("লাইট")) &&
-                (lower.contains("বন্ধ") || lower.contains("অফ")))
+        if (!isQuestion && (lower.contains("flashlight off") || lower.contains("torch off") ||
+                ((lower.contains("ফ্ল্যাশ") || lower.contains("টর্চ") || lower.contains("লাইট")) &&
+                    (lower.contains("বন্ধ") || lower.contains("অফ"))))
         ) {
             val reply = if (language == SathiLanguage.BN) "জি, ফ্ল্যাশলাইট বন্ধ করছি।" else "Turning off your flashlight."
             return Result.success(simpleTurn(reply, SathiMood.WARM, PhoneActionType.FLASHLIGHT_OFF))
         }
 
-        if (lower.contains("volume up") || (lower.contains("ভলিউম") && (lower.contains("বাড়া") || lower.contains("বাড়া") || lower.contains("বেশি")))) {
+        if (!isQuestion && (lower.contains("volume up") || (lower.contains("ভলিউম") && (lower.contains("বাড়া") || lower.contains("বাড়া") || lower.contains("বেশি"))))) {
             val reply = if (language == SathiLanguage.BN) "জি, সাউন্ড একটু বাড়িয়ে দিচ্ছি।" else "Increasing media volume."
             return Result.success(simpleTurn(reply, SathiMood.WARM, PhoneActionType.VOLUME_UP))
         }
-        if (lower.contains("volume down") || (lower.contains("ভলিউম") && (lower.contains("কমা") || lower.contains("কম")))) {
+        if (!isQuestion && (lower.contains("volume down") || (lower.contains("ভলিউম") && (lower.contains("কমা") || lower.contains("কম"))))) {
             val reply = if (language == SathiLanguage.BN) "জি, সাউন্ড একটু কমিয়ে দিচ্ছি।" else "Lowering media volume."
             return Result.success(simpleTurn(reply, SathiMood.WARM, PhoneActionType.VOLUME_DOWN))
         }
 
-        if (lower.contains("alarm") || lower.contains("অ্যালার্ম")) {
+        if (!isQuestion && (lower.contains("alarm") || lower.contains("অ্যালার্ম"))) {
             val timeMatch = Regex("(\\d{1,2})[:.](\\d{2})").find(lower)
             val hourOnly = Regex("(\\d{1,2})").find(lower)?.groupValues?.getOrNull(1)?.toIntOrNull()
             val param = timeMatch?.let { "${it.groupValues[1].padStart(2, '0')}:${it.groupValues[2]}" }
@@ -396,7 +401,7 @@ class SathiAiService(
             return Result.success(simpleTurn(reply, SathiMood.WARM, PhoneActionType.SET_ALARM, param, "Sathi Alarm"))
         }
 
-        if (lower.contains("timer") || lower.contains("টাইমার")) {
+        if (!isQuestion && (lower.contains("timer") || lower.contains("টাইমার"))) {
             val num = Regex("(\\d+)").find(lower)?.groupValues?.get(1)?.toIntOrNull() ?: 5
             val seconds = if (lower.contains("sec") || lower.contains("সেকেন্ড")) num else num * 60
             val reply = if (language == SathiLanguage.BN) {
@@ -407,7 +412,7 @@ class SathiAiService(
             return Result.success(simpleTurn(reply, SathiMood.WARM, PhoneActionType.SET_TIMER, seconds.toString(), "Sathi Timer"))
         }
 
-        if (lower.contains("reminder") || lower.contains("calendar") || lower.contains("রিমাইন্ডার") || lower.contains("মনে করিয়ে")) {
+        if (!isQuestion && (lower.contains("reminder") || lower.contains("calendar") || lower.contains("রিমাইন্ডার") || lower.contains("মনে করিয়ে"))) {
             val reply = if (language == SathiLanguage.BN) {
                 "ক্যালেন্ডারে রিমাইন্ডার যোগ করার পর্দা খুলে দিচ্ছি।"
             } else {
@@ -416,13 +421,7 @@ class SathiAiService(
             return Result.success(simpleTurn(reply, SathiMood.WARM, PhoneActionType.ADD_REMINDER, text))
         }
 
-        val isHowToQuestion = lower.contains("কীভাবে") || lower.contains("কিভাবে") ||
-            lower.contains("কেমনে") || lower.contains("কি করে") ||
-            lower.contains("নেই কেন") || lower.contains("নাই কেন") ||
-            lower.contains("দেয় না") || lower.contains("দেয় না") || lower.contains("দাও না") ||
-            lower.contains("how to ") || lower.contains("why ") || lower.contains("what is ")
-
-        if (!isHowToQuestion && (lower.startsWith("call ") || lower.contains("কল কর") || lower.contains("ফোন কর"))) {
+        if (!isQuestion && (lower.startsWith("call ") || lower.contains("কল কর") || lower.contains("ফোন কর"))) {
             val digits = Regex("(\\+?\\d[\\d\\s-]{3,})").find(text)?.value?.trim() ?: ""
             val reply = if (language == SathiLanguage.BN) {
                 "জি বস, কল করার জন্য ডায়ালার প্রস্তুত করছি।"
@@ -432,7 +431,7 @@ class SathiAiService(
             return Result.success(simpleTurn(reply, SathiMood.WARM, PhoneActionType.CALL_CONFIRM, digits))
         }
 
-        if (!isHowToQuestion && (lower.startsWith("sms ") || lower.startsWith("message ") || lower.contains("মেসেজ পাঠা") ||
+        if (!isQuestion && (lower.startsWith("sms ") || lower.startsWith("message ") || lower.contains("মেসেজ পাঠা") ||
                 (lower.contains("এসএমএস") && (lower.contains("কর") || lower.contains("পাঠা"))))
         ) {
             val digits = Regex("(\\+?\\d[\\d\\s-]{3,})").find(text)?.value?.trim() ?: ""
@@ -446,9 +445,9 @@ class SathiAiService(
             return Result.success(simpleTurn(reply, SathiMood.WARM, PhoneActionType.SMS_CONFIRM, digits, cleanBody, recipient = rec))
         }
 
-        if (lower.startsWith("open ") || lower.startsWith("launch ") ||
-            lower.contains("খোলো") || lower.contains("খুলো") || lower.contains("চালু করো") ||
-            lower.contains("ঢোকো") || lower.contains("ঢোকাও") || lower.contains("ঢুকো") || lower.contains("ঢুকে যাও")
+        if (!isQuestion && (lower.startsWith("open ") || lower.startsWith("launch ") ||
+                lower.contains("খোলো") || lower.contains("খুলো") || lower.contains("চালু করো") ||
+                lower.contains("ঢোকো") || lower.contains("ঢোকাও") || lower.contains("ঢুকো") || lower.contains("ঢুকে যাও"))
         ) {
             val appName = text
                 .replace(Regex("(open|launch)", RegexOption.IGNORE_CASE), "")
@@ -476,7 +475,7 @@ class SathiAiService(
         // 10. Full Gemini Intelligence + Google Search Grounding (whenever Google API Key is set!)
         val isDeviceAction = isExplicitPhoneControl(lower)
         if (!isDeviceAction && cleanKey.isNotBlank()) {
-            callGeminiRestWithSearch(
+            val cloudOutcome = callGeminiRestWithSearch(
                 apiKey = cleanKey,
                 userMessage = text,
                 language = language,
@@ -484,9 +483,25 @@ class SathiAiService(
                 memories = memories,
                 recentHistory = recentHistory,
                 userEmotion = userEmotion,
-                customSystemPrompt = customSystemPrompt
-            )?.let { cloudTurn ->
+                customSystemPrompt = customSystemPrompt,
+                preferSearch = true
+            )
+            cloudOutcome.turn?.let { cloudTurn ->
                 return Result.success(cloudTurn)
+            }
+            // Surface explicit API key / quota errors cleanly rather than falling back silently to canned phrases
+            if (cloudOutcome.httpCode in listOf(400, 401, 403, 429)) {
+                return Result.failure(
+                    IllegalStateException(
+                        cloudOutcome.errorMessage.ifBlank {
+                            if (language == SathiLanguage.BN) {
+                                "Google API Key-তে সমস্যা (HTTP ${cloudOutcome.httpCode})। অনুগ্রহ করে সেটিংস বা চাবি আইকন থেকে নতুন করে যাচাই করুন।"
+                            } else {
+                                "Google API Key rejected (HTTP ${cloudOutcome.httpCode}). Please verify your key in Settings."
+                            }
+                        }
+                    )
+                )
             }
         }
 
@@ -920,17 +935,19 @@ class SathiAiService(
                     append("User input: $cleanInput\n")
                     append("Respond clearly, naturally, and completely in $langLabel. Do not use 'নমস্কার'.")
                 }
-                callGeminiRestWithSearch(
+                val geminiOut = callGeminiRestWithSearch(
                     apiKey = cleanKey,
                     userMessage = studioPrompt,
                     language = language,
                     userName = "বন্ধু",
                     memories = emptyList(),
                     recentHistory = emptyList()
-                )?.let { geminiOut ->
-                    if (geminiOut.replyText.isNotBlank()) {
-                        return@withContext Result.success(geminiOut.replyText)
-                    }
+                )
+                geminiOut.turn?.replyText?.takeIf { it.isNotBlank() }?.let { replyText ->
+                    return@withContext Result.success(replyText)
+                }
+                if (geminiOut.httpCode in setOf(400, 401, 403, 429) && geminiOut.errorMessage.isNotBlank()) {
+                    return@withContext Result.failure(IllegalStateException(geminiOut.errorMessage))
                 }
             }
 
@@ -1023,6 +1040,12 @@ class SathiAiService(
     private fun isExplicitPhoneControl(lower: String): Boolean =
         Companion.isExplicitPhoneControl(lower)
 
+    private data class GeminiCallResult(
+        val turn: SathiTurnResult? = null,
+        val httpCode: Int = 0,
+        val errorMessage: String = ""
+    )
+
     private suspend fun callGeminiRestWithSearch(
         apiKey: String,
         userMessage: String,
@@ -1031,10 +1054,11 @@ class SathiAiService(
         memories: List<UserMemory>,
         recentHistory: List<Pair<Boolean, String>>,
         userEmotion: UserEmotion? = null,
-        customSystemPrompt: String = SathiPreferences.DEFAULT_BOSS_SYSTEM_PROMPT
-    ): SathiTurnResult? = withContext(Dispatchers.IO) {
+        customSystemPrompt: String = SathiPreferences.DEFAULT_BOSS_SYSTEM_PROMPT,
+        preferSearch: Boolean = true
+    ): GeminiCallResult = withContext(Dispatchers.IO) {
         val cleanKey = sanitizeApiKeyInput(apiKey)
-        if (cleanKey.isBlank()) return@withContext null
+        if (cleanKey.isBlank()) return@withContext GeminiCallResult()
 
         val langName = if (language == SathiLanguage.BN) "Bengali (বাংলা)" else "English"
         val memorySummary = if (memories.isNotEmpty()) {
@@ -1044,7 +1068,8 @@ class SathiAiService(
             val activePrompt = customSystemPrompt.trim().ifBlank { SathiPreferences.DEFAULT_BOSS_SYSTEM_PROMPT }
             append(activePrompt)
             append(" Also: You are Sathi AI (সাথী এআই), created by Mohammad Bayzid Hasan (মোহাম্মদ বাইজিদ হাসান). ")
-            append("Think step-by-step for complex logic, math, coding, debugging, science, health guidance, legal/business drafting, and Bengali-English translation. ")
+            append("Strict Accuracy & Compliance Rule: তুমি কঠোরভাবে ব্যবহারকারীর নির্দেশ অনুসরণ করবে। কোনো বিষয়ে অনুমান না করে বা অপ্রয়োজনীয় সার্চ না করে সরাসরি নির্ভুল উত্তর দেবে। Never invent, guess, or fabricate dates, numbers, URLs, quotes, or unknown facts. If a fact cannot be verified, honestly say so rather than guessing. ")
+            append("Think carefully for math, coding, science, health guidance, legal/business drafting, and Bengali-English translation. ")
             append("Never say 'নমস্কার'. Use 'আসসালামু আলাইকুম' only when greeting. ")
             append("Always address the user respectfully as 'বস' (Boss) — user's profile name is $userName — and answer clearly in $langName. Use google_search whenever live news, prices, weather, schedules, or current factual verification helps.")
             if (language == SathiLanguage.BN) {
@@ -1058,38 +1083,26 @@ class SathiAiService(
             }
         }
 
-        val contents = JSONArray()
-        recentHistory.takeLast(12).forEach { (isUser, msg) ->
-            if (msg.isNotBlank()) {
-                contents.put(
-                    JSONObject().apply {
-                        put("role", if (isUser) "user" else "model")
-                        put("parts", JSONArray().put(JSONObject().put("text", msg.take(1200))))
-                    }
-                )
-            }
-        }
-        contents.put(
-            JSONObject().apply {
-                put("role", "user")
-                put("parts", JSONArray().put(JSONObject().put("text", userMessage)))
-            }
-        )
-
+        val contents = buildGeminiContents(recentHistory, userMessage)
         val candidateModels = listOf("gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash")
+        val searchModes = if (preferSearch) listOf(true, false) else listOf(false)
+        var lastCode = 0
+        var lastDetail = ""
+
         for (model in candidateModels) {
-            for (useSearch in listOf(true, false)) {
+            for (useSearch in searchModes) {
                 try {
+                    val genConfig = JSONObject().apply {
+                        put("temperature", 0.45)
+                        put("maxOutputTokens", 4096)
+                        if (model.startsWith("gemini-2.5")) {
+                            put("thinkingConfig", JSONObject().put("thinkingBudget", 512))
+                        }
+                    }
                     val payload = JSONObject().apply {
                         put("system_instruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sysText))))
                         put("contents", contents)
-                        put(
-                            "generationConfig",
-                            JSONObject().apply {
-                                put("temperature", 0.7)
-                                put("maxOutputTokens", 2048)
-                            }
-                        )
+                        put("generationConfig", genConfig)
                         if (useSearch) {
                             put("tools", JSONArray().put(JSONObject().put("google_search", JSONObject())))
                         }
@@ -1104,11 +1117,18 @@ class SathiAiService(
                     httpClient.newCall(req).execute().use { resp ->
                         if (!resp.isSuccessful) {
                             val code = resp.code
-                            // If search tool caused 400/403/404, immediately retry plain generateContent on this same model
-                            if (useSearch && (code == 400 || code == 403 || code == 404)) {
-                                return@use
+                            lastCode = code
+                            val errBody = resp.body?.string().orEmpty()
+                            lastDetail = runCatching {
+                                JSONObject(errBody).optJSONObject("error")?.optString("message").orEmpty()
+                            }.getOrDefault("")
+                            if (code == 401 || code == 403) {
+                                return@withContext GeminiCallResult(
+                                    turn = null,
+                                    httpCode = code,
+                                    errorMessage = formatGeminiHttpError(code, lastDetail, language)
+                                )
                             }
-                            if (code == 401 || code == 403) return@withContext null
                             return@use
                         }
                         val body = resp.body?.string() ?: return@use
@@ -1117,7 +1137,9 @@ class SathiAiService(
                         val parts = cand.optJSONObject("content")?.optJSONArray("parts") ?: return@use
                         val reply = buildString {
                             for (i in 0 until parts.length()) {
-                                val t = parts.optJSONObject(i)?.optString("text").orEmpty()
+                                val p = parts.optJSONObject(i) ?: continue
+                                if (p.optBoolean("thought", false)) continue
+                                val t = p.optString("text")
                                 if (t.isNotBlank()) append(t)
                             }
                         }.trim()
@@ -1136,17 +1158,44 @@ class SathiAiService(
                             }
                         }
 
-                        return@withContext simpleTurn(
-                            reply = reply,
-                            mood = SathiMood.WARM,
-                            sources = sources.distinctBy { it.url }.take(4)
+                        return@withContext GeminiCallResult(
+                            turn = simpleTurn(
+                                reply = reply,
+                                mood = SathiMood.WARM,
+                                sources = sources.distinctBy { it.url }.take(4)
+                            )
                         )
                     }
                 } catch (_: Exception) {
                 }
             }
         }
-        null
+        GeminiCallResult(
+            turn = null,
+            httpCode = lastCode,
+            errorMessage = if (lastCode != 0) formatGeminiHttpError(lastCode, lastDetail, language) else ""
+        )
+    }
+
+    private fun formatGeminiHttpError(code: Int, detail: String, language: SathiLanguage): String {
+        val suffix = if (detail.isNotBlank()) " (${detail.take(110)})" else ""
+        return when (code) {
+            400, 401, 403 -> if (language == SathiLanguage.BN) {
+                "Google API Key-টি অকার্যকর বা অনুমোদিত নয় (HTTP $code)$suffix। সেটিংস থেকে সঠিক চাবি যাচাই করুন।"
+            } else {
+                "Google API Key rejected or unauthorized (HTTP $code)$suffix. Please re-verify your key in Settings."
+            }
+            429 -> if (language == SathiLanguage.BN) {
+                "Google API-এর ফ্রি কোটা সাময়িকভাবে শেষ (HTTP 429)। একটু পরে আবার চেষ্টা করুন।"
+            } else {
+                "Google API quota temporarily exceeded (HTTP 429). Please retry shortly."
+            }
+            else -> if (language == SathiLanguage.BN) {
+                "Google সার্ভার ত্রুটি (HTTP $code)$suffix।"
+            } else {
+                "Google API error (HTTP $code)$suffix."
+            }
+        }
     }
 
     suspend fun fetchGeminiKnowledgeEntry(
@@ -1268,7 +1317,15 @@ class SathiAiService(
             )
 
         val payload = JSONObject().apply {
-            put("contents", JSONArray().put(JSONObject().put("parts", parts)))
+            put(
+                "contents",
+                JSONArray().put(
+                    JSONObject().apply {
+                        put("role", "user")
+                        put("parts", parts)
+                    }
+                )
+            )
         }
         val models = listOf("gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash")
         for (model in models) {
@@ -1753,39 +1810,48 @@ class SathiAiService(
                 else -> null
             }
 
-            val isInfoQuery = (lower.contains("সম্পর্কে") || lower.contains("কীভাবে") || lower.contains("কিভাবে") ||
-                lower.contains("ইতিহাস") || lower.contains("সুবিধা") || lower.contains("what is ") || lower.contains("how does ")) &&
+            val isInfoQuery = (isInformationalQuestion(text, lower) ||
+                lower.contains("সুবিধা")) &&
                 !lower.contains("এসএমএস") && !lower.contains("মেসেজ") && !lower.contains("খোঁজো") &&
-                !lower.contains("খোলো") && !lower.contains("লিখ") && !lower.contains("লেখ")
-            if (isInfoQuery) return null
+                !lower.contains("খোলো") && !lower.contains("ঢোকো")
+            if (isInfoQuery && explicitPlatform == null) return null
+            if (isInfoQuery && explicitPlatform != null && !lower.contains("এসএমএস") && !lower.contains("মেসেজ") &&
+                !lower.contains("খোঁজো") && !lower.contains("খোলো") && !lower.contains("ঢোকো")
+            ) {
+                return null
+            }
 
             val wantsSearchFriend = lower.contains("খোঁজ") || lower.contains("খোজ") || lower.contains("খুঁজ") ||
                 lower.contains("খুজ") || lower.contains("সার্চ") || lower.contains("বের কর") ||
                 lower.contains("search") || lower.contains("find")
             val isCreativeAsk = lower.contains("গল্প") || lower.contains("কৌতুক") || lower.contains("কবিতা") || lower.contains("খবর")
-            val directedTell = !isCreativeAsk &&
+            val directedTell = !isCreativeAsk && !isInfoQuery &&
                 !lower.contains("আমাকে") && !lower.contains("তোমাকে") && !lower.contains("আপনাকে") &&
                 (
                     Regex("([^\\s,।!?]{2,22})(?:-কে|কে)\\s+(?:(?:হোয়াটসঅ্যাপে|হোয়াটসঅ্যাপে|মেসেঞ্জারে|ম্যাসেঞ্জারে|ফেসবুকে|একটু)\\s+)*(?:বলো|জানাও|জানিয়ে দাও)")
                         .containsMatchIn(lower) ||
                         (explicitPlatform != null && (lower.contains("বলো") || lower.contains("জানিয়ে")))
                     )
-            val wantsMessageOrComment = lower.contains("মেসেজ") || lower.contains("এসএমএস") ||
+            val explicitMessagingVerb = lower.contains("মেসেজ") || lower.contains("এসএমএস") ||
                 lower.contains("sms") || lower.contains("কমেন্ট") || lower.contains("কমপ্লেন") ||
-                lower.contains("রিপ্লাই") || lower.contains("এপ্লাই") || lower.contains("জানাও") ||
-                lower.contains("জানিয়ে দাও") || lower.contains("লিখে পাঠা") || lower.contains("মেসেজ দে") ||
-                lower.contains("বলো যে") ||
-                lower.contains("লিখ") || lower.contains("লেখ") || lower.contains("পাঠা") || lower.contains("বলো ওকে") ||
+                lower.contains("রিপ্লাই") || lower.contains("এপ্লাই") ||
+                lower.contains("লিখে পাঠা") || lower.contains("মেসেজ দে") ||
+                lower.contains("বলো যে") || lower.contains("বলো ওকে") ||
                 directedTell ||
                 lower.contains("message") || lower.contains("comment") || lower.contains("reply") ||
-                lower.contains("send") || lower.contains("post") || lower.contains("write") || lower.contains("text ")
+                lower.contains("send") || lower.contains("text ")
+            val platformSpecificVerb = explicitPlatform != null && (
+                lower.contains("জানাও") || lower.contains("জানিয়ে দাও") ||
+                    lower.contains("লিখ") || lower.contains("লেখ") || lower.contains("পাঠা") ||
+                    lower.contains("post") || lower.contains("write")
+                )
+            val wantsMessageOrComment = explicitMessagingVerb || platformSpecificVerb
 
             if (explicitPlatform == null && !wantsMessageOrComment && !wantsSearchFriend) return null
             val platform = explicitPlatform ?: when {
                 lower.contains("কমেন্ট") || lower.contains("comment") -> "Facebook"
                 lower.contains("রিপ্লাই") || lower.contains("reply") -> "Messenger"
-                lower.contains("বন্ধু") || lower.contains("ফ্রেন্ড") || lower.contains("জানাও") ||
-                    lower.contains("জানিয়ে দাও") || directedTell -> "WhatsApp"
+                lower.contains("বন্ধু") || lower.contains("ফ্রেন্ড") || directedTell -> "WhatsApp"
                 else -> return null
             }
 
@@ -2184,12 +2250,81 @@ class SathiAiService(
             return if (language == SathiLanguage.BN) "উত্তর হবে: $formatted।" else "The answer is $formatted."
         }
 
+        fun isInformationalQuestion(text: String, lower: String): Boolean {
+            if (text.trim().endsWith("?")) return true
+            return lower.contains("কীভাবে") || lower.contains("কিভাবে") || lower.contains("কেমনে") ||
+                lower.contains("কেন ") || lower.endsWith("কেন") || lower.contains("কবে ") ||
+                lower.contains("কোথায়") || lower.contains("কোথায়") ||
+                lower.contains("সম্পর্কে") || lower.contains("ইতিহাস") || lower.contains("সংজ্ঞা") ||
+                lower.contains("আবিষ্কার") || lower.contains("মানে কী") || lower.contains("মানে কি") ||
+                lower.contains("অর্থ কী") || lower.contains("অর্থ কি") ||
+                lower.contains("কত ") || lower.contains("কয়টি") || lower.contains("কয়টি") ||
+                lower.contains("নেই কেন") || lower.contains("নাই কেন") ||
+                lower.contains("দেয় না") || lower.contains("দেয় না") || lower.contains("দাও না") ||
+                Regex("(?:^|\\s)(কী|কি|কে|কোন)(?:$|\\s|[?।])").containsMatchIn(lower) ||
+                Regex("\\b(how|why|who|what|when|where|which|explain|define|history|meaning)\\b").containsMatchIn(lower)
+        }
+
+        internal fun buildGeminiContents(
+            recentHistory: List<Pair<Boolean, String>>,
+            userMessage: String
+        ): JSONArray {
+            val normalized = mutableListOf<Pair<String, String>>()
+            recentHistory.takeLast(12).forEach { (isUser, rawMsg) ->
+                val clean = rawMsg.trim().take(1200)
+                if (clean.isEmpty()) return@forEach
+                val role = if (isUser) "user" else "model"
+                // Gemini REST requires contents[0].role == "user"
+                if (normalized.isEmpty() && role != "user") return@forEach
+                val last = normalized.lastOrNull()
+                if (last != null && last.first == role) {
+                    val merged = if (last.second == clean) clean else "${last.second}\n$clean"
+                    normalized[normalized.lastIndex] = role to merged.take(1600)
+                } else {
+                    normalized.add(role to clean)
+                }
+            }
+            val cleanUser = userMessage.trim()
+            if (cleanUser.isNotEmpty()) {
+                val last = normalized.lastOrNull()
+                if (last != null && last.first == "user") {
+                    // Replace duplicate trailing user message (e.g. already added to _messages) or merge cleanly
+                    val updated = if (last.second == cleanUser || cleanUser.startsWith(last.second)) {
+                        cleanUser
+                    } else {
+                        "${last.second}\n$cleanUser"
+                    }
+                    normalized[normalized.lastIndex] = "user" to updated
+                } else {
+                    normalized.add("user" to cleanUser)
+                }
+            }
+            val contents = JSONArray()
+            normalized.forEach { (role, text) ->
+                contents.put(
+                    JSONObject().apply {
+                        put("role", role)
+                        put("parts", JSONArray().put(JSONObject().put("text", text)))
+                    }
+                )
+            }
+            return contents
+        }
+
         fun isTimeOrDateQuery(lower: String): Boolean {
-            return lower.contains("time") || lower.contains("সময়") || lower.contains("সময়") ||
-                lower.contains("কয়টা") || lower.contains("কয়টা") || lower.contains("কটা বাজে") ||
-                lower.contains("বাজে") || lower.contains("তারিখ") || lower.contains("date") ||
-                lower.contains("কী বার") || lower.contains("কি বার") || lower.contains("কোন বার") ||
-                lower.contains("what day")
+            val enTimeDate = Regex(
+                "\\b(what time|current time|time now|what('s| is) the time|today'?s date|what date|current date|what day is (it|today))\\b"
+            ).containsMatchIn(lower)
+            if (enTimeDate) return true
+            return lower.contains("কয়টা বাজে") || lower.contains("কয়টা বাজে") ||
+                lower.contains("কটা বাজে") || lower.contains("এখন কয়টা") ||
+                lower.contains("এখন কয়টা") || lower.contains("এখন সময় কত") ||
+                lower.contains("এখন সময় কত") || lower.contains("সময় কত") ||
+                lower.contains("সময় কত") || lower.contains("আজ কত তারিখ") ||
+                lower.contains("আজকের তারিখ") || lower.contains("তারিখ কত") ||
+                lower.contains("কী তারিখ") || lower.contains("কি তারিখ") ||
+                lower.contains("আজ কী বার") || lower.contains("আজ কি বার") ||
+                lower.contains("কোন বার")
         }
 
         fun formatCurrentTimeAndDate(language: SathiLanguage): String {

@@ -28,6 +28,7 @@ import androidx.core.content.ContextCompat
 import com.example.model.SathiLanguage
 import com.example.model.SathiMood
 import com.example.model.SathiVoiceProfile
+import com.example.overlay.SathiWakeWordService
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
@@ -44,7 +45,8 @@ data class VoiceEngineState(
     val muted: Boolean = false,
     val partialTranscript: String = "",
     val ttsReady: Boolean = false,
-    val speechErrorMessage: String? = null
+    val speechErrorMessage: String? = null,
+    val micConflictDetected: Boolean = false
 )
 
 class VoiceController(
@@ -65,6 +67,9 @@ class VoiceController(
     private var liveAutoListenAfterTts: Boolean = false
     private var consecutiveLiveSilenceCount: Int = 0
     private var busyRetryCount: Int = 0
+    private var consecutiveAudioBusyCount: Int = 0
+    private var listeningGeneration: Long = 0L
+    private var pendingRetryRunnable: Runnable? = null
     private var lastPartialTranscript: String = ""
     @Volatile
     private var startEndSoundsEnabled: Boolean = false
@@ -117,10 +122,25 @@ class VoiceController(
         }
     }
 
+    private fun clearPendingRetry() {
+        pendingRetryRunnable?.let { mainHandler.removeCallbacks(it) }
+        pendingRetryRunnable = null
+    }
+
+    private fun scheduleRetry(delayMs: Long, action: () -> Unit) {
+        clearPendingRetry()
+        val runnable = Runnable {
+            pendingRetryRunnable = null
+            action()
+        }
+        pendingRetryRunnable = runnable
+        mainHandler.postDelayed(runnable, delayMs)
+    }
+
     private fun scheduleAutoResumeAfterSpeech() {
         if (_state.value.liveSessionActive && _state.value.autoVoiceEnabled && liveAutoListenAfterTts && !_state.value.muted) {
             liveAutoListenAfterTts = false
-            mainHandler.postDelayed({
+            scheduleRetry(420L) {
                 if (_state.value.liveSessionActive &&
                     _state.value.autoVoiceEnabled &&
                     !_state.value.muted &&
@@ -129,14 +149,14 @@ class VoiceController(
                 ) {
                     startListeningInternal(activeLanguage, preferOfflineRecognition || !isNetworkConnected())
                 }
-            }, 380L)
+            }
         }
     }
 
     fun resumeLiveListeningIfActive(language: SathiLanguage = activeLanguage, preferOffline: Boolean = preferOfflineRecognition) {
         activeLanguage = language
-        preferOfflineRecognition = preferOffline || !isNetworkConnected()
-        mainHandler.postDelayed({
+        preferOfflineRecognition = preferOffline
+        scheduleRetry(420L) {
             if (_state.value.liveSessionActive &&
                 _state.value.autoVoiceEnabled &&
                 !_state.value.muted &&
@@ -145,15 +165,19 @@ class VoiceController(
             ) {
                 startListeningInternal(activeLanguage, preferOfflineRecognition || !isNetworkConnected())
             }
-        }, 380L)
+        }
     }
 
     fun setAutoVoiceEnabled(enabled: Boolean) {
         _state.value = _state.value.copy(autoVoiceEnabled = enabled)
         if (!enabled) {
             liveAutoListenAfterTts = false
+            clearPendingRetry()
             stopBargeInMonitor()
-            _state.value = _state.value.copy(liveSessionActive = false)
+            _state.value = _state.value.copy(liveSessionActive = false, micConflictDetected = false)
+            if (!_state.value.listening && !_state.value.speaking) {
+                SathiWakeWordService.setPausedForActiveVoice(appContext, false)
+            }
         }
     }
 
@@ -175,41 +199,49 @@ class VoiceController(
 
     fun startListeningAfterWake(language: SathiLanguage, preferOffline: Boolean = false) {
         activeLanguage = language
-        preferOfflineRecognition = preferOffline || !isNetworkConnected()
+        preferOfflineRecognition = preferOffline
         consecutiveLiveSilenceCount = 0
         busyRetryCount = 0
+        consecutiveAudioBusyCount = 0
         retriedOfflineAfterNetError = false
         _state.value = _state.value.copy(
             liveSessionActive = _state.value.autoVoiceEnabled,
             muted = false,
-            speechErrorMessage = null
+            speechErrorMessage = null,
+            micConflictDetected = false
         )
-        startListeningInternal(language, preferOfflineRecognition)
+        startListeningInternal(language, preferOffline || !isNetworkConnected())
     }
 
     fun startLiveSession(language: SathiLanguage, preferOffline: Boolean = false) {
         activeLanguage = language
-        preferOfflineRecognition = preferOffline || !isNetworkConnected()
+        preferOfflineRecognition = preferOffline
         consecutiveLiveSilenceCount = 0
         busyRetryCount = 0
+        consecutiveAudioBusyCount = 0
         retriedOfflineAfterNetError = false
         _state.value = _state.value.copy(
             liveSessionActive = _state.value.autoVoiceEnabled,
             muted = false,
-            speechErrorMessage = null
+            speechErrorMessage = null,
+            micConflictDetected = false
         )
-        startListeningInternal(language, preferOfflineRecognition)
+        startListeningInternal(language, preferOffline || !isNetworkConnected())
     }
 
     fun stopLiveSession() {
+        listeningGeneration++
         liveAutoListenAfterTts = false
         consecutiveLiveSilenceCount = 0
         busyRetryCount = 0
+        consecutiveAudioBusyCount = 0
         lastPartialTranscript = ""
+        clearPendingRetry()
         stopBargeInMonitor()
-        _state.value = _state.value.copy(liveSessionActive = false, muted = false)
+        _state.value = _state.value.copy(liveSessionActive = false, muted = false, micConflictDetected = false)
         stopListening()
         stopSpeaking()
+        SathiWakeWordService.setPausedForActiveVoice(appContext, false)
     }
 
     fun toggleMute() {
@@ -217,11 +249,13 @@ class VoiceController(
     }
 
     fun setMuted(muted: Boolean) {
-        _state.value = _state.value.copy(muted = muted)
+        _state.value = _state.value.copy(muted = muted, micConflictDetected = false)
         if (muted) {
             liveAutoListenAfterTts = false
+            clearPendingRetry()
             stopBargeInMonitor()
             stopListening()
+            SathiWakeWordService.setPausedForActiveVoice(appContext, false)
         } else if (_state.value.liveSessionActive && _state.value.autoVoiceEnabled && !_state.value.speaking && !_state.value.listening) {
             startListeningInternal(activeLanguage, preferOfflineRecognition || !isNetworkConnected())
         }
@@ -230,30 +264,51 @@ class VoiceController(
     fun setLiveSessionEnabled(enabled: Boolean) {
         if (!enabled) {
             liveAutoListenAfterTts = false
+            clearPendingRetry()
             stopBargeInMonitor()
+            SathiWakeWordService.setPausedForActiveVoice(appContext, false)
         }
         _state.value = _state.value.copy(liveSessionActive = enabled)
     }
 
     fun startListening(language: SathiLanguage, preferOffline: Boolean = false) {
         activeLanguage = language
-        preferOfflineRecognition = preferOffline || !isNetworkConnected()
+        preferOfflineRecognition = preferOffline
         consecutiveLiveSilenceCount = 0
         busyRetryCount = 0
+        consecutiveAudioBusyCount = 0
         retriedOfflineAfterNetError = false
-        startListeningInternal(language, preferOfflineRecognition)
+        startListeningInternal(language, preferOffline || !isNetworkConnected())
     }
 
-    private fun startListeningInternal(language: SathiLanguage, preferOffline: Boolean) {
+    private fun startListeningInternal(
+        language: SathiLanguage,
+        preferOffline: Boolean,
+        forceOfflineOnce: Boolean = false
+    ) {
         activeLanguage = language
-        val useOffline = preferOffline || !isNetworkConnected()
-        preferOfflineRecognition = useOffline
+        val useOffline = forceOfflineOnce || preferOffline || !isNetworkConnected()
         mainHandler.post {
+            clearPendingRetry()
+            val bargeInWasActive = bargeInThread?.isAlive == true
             liveAutoListenAfterTts = false
             lastPartialTranscript = ""
             stopBargeInMonitor()
             stopSpeakingInternal()
+            SathiWakeWordService.setPausedForActiveVoice(appContext, true)
             _state.value = _state.value.copy(speechErrorMessage = null, partialTranscript = "")
+
+            if (bargeInWasActive) {
+                // Give AudioRecord HAL ~120ms to finish releasing hardware before SpeechRecognizer opens MIC
+                scheduleRetry(120L) {
+                    if (!_state.value.muted && !_state.value.speaking) {
+                        startListeningInternal(language, preferOffline, forceOfflineOnce)
+                    }
+                }
+                return@post
+            }
+
+            val myGen = ++listeningGeneration
 
             if (!SpeechRecognizer.isRecognitionAvailable(appContext)) {
                 _state.value = _state.value.copy(
@@ -269,29 +324,39 @@ class VoiceController(
             }
 
             try {
-                speechRecognizer?.cancel()
-                speechRecognizer?.destroy()
+                runCatching { speechRecognizer?.destroy() }
+                speechRecognizer = null
                 speechRecognizer = SpeechRecognizer.createSpeechRecognizer(appContext).apply {
                     setRecognitionListener(object : RecognitionListener {
                         override fun onReadyForSpeech(params: Bundle?) {
+                            if (myGen != listeningGeneration) return
                             busyRetryCount = 0
-                            _state.value = _state.value.copy(listening = true, speechErrorMessage = null)
+                            consecutiveAudioBusyCount = 0
+                            _state.value = _state.value.copy(
+                                listening = true,
+                                speechErrorMessage = null,
+                                micConflictDetected = false
+                            )
                             playListeningCueSound(isStart = true)
                         }
 
                         override fun onBeginningOfSpeech() {
+                            if (myGen != listeningGeneration) return
                             consecutiveLiveSilenceCount = 0
+                            consecutiveAudioBusyCount = 0
                         }
 
                         override fun onRmsChanged(rmsdB: Float) {}
                         override fun onBufferReceived(buffer: ByteArray?) {}
 
                         override fun onEndOfSpeech() {
+                            if (myGen != listeningGeneration) return
                             _state.value = _state.value.copy(listening = false)
                             playListeningCueSound(isStart = false)
                         }
 
                         override fun onError(error: Int) {
+                            if (myGen != listeningGeneration) return
                             val rescued = lastPartialTranscript.trim()
                             lastPartialTranscript = ""
                             val isTimeoutOrNoMatch = error == SpeechRecognizer.ERROR_NO_MATCH ||
@@ -300,56 +365,90 @@ class VoiceController(
                             if (isTimeoutOrNoMatch && rescued.length >= 2) {
                                 consecutiveLiveSilenceCount = 0
                                 busyRetryCount = 0
-                                _state.value = _state.value.copy(listening = false, partialTranscript = rescued)
+                                consecutiveAudioBusyCount = 0
+                                _state.value = _state.value.copy(
+                                    listening = false,
+                                    partialTranscript = rescued,
+                                    micConflictDetected = false
+                                )
                                 onFinalTranscript(rescued)
                                 return
                             }
 
-                            // Automatic fallback retry with EXTRA_PREFER_OFFLINE when network speech fails
+                            // Automatic single fallback retry with EXTRA_PREFER_OFFLINE when network speech fails
                             val isNetworkErr = error == SpeechRecognizer.ERROR_NETWORK ||
                                 error == SpeechRecognizer.ERROR_NETWORK_TIMEOUT
                             if (isNetworkErr && !retriedOfflineAfterNetError) {
                                 retriedOfflineAfterNetError = true
-                                mainHandler.postDelayed({
+                                scheduleRetry(260L) {
                                     if (!_state.value.muted && !_state.value.speaking) {
-                                        startListeningInternal(activeLanguage, true)
+                                        startListeningInternal(activeLanguage, preferOfflineRecognition, forceOfflineOnce = true)
                                     }
-                                }, 220L)
+                                }
                                 return
                             }
 
-                            // Recover seamlessly if recognizer was temporarily busy
-                            if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY && busyRetryCount < 6) {
+                            val isAudioOrBusy = error == SpeechRecognizer.ERROR_AUDIO ||
+                                error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY
+                            if (isAudioOrBusy) {
+                                consecutiveAudioBusyCount++
+                            } else if (error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                                consecutiveAudioBusyCount = 0
+                            }
+
+                            val micConflict = consecutiveAudioBusyCount >= 2
+
+                            // Recover seamlessly when recognizer is busy or Screen Recorder holds mic
+                            if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY &&
+                                _state.value.liveSessionActive &&
+                                _state.value.autoVoiceEnabled &&
+                                !_state.value.muted
+                            ) {
                                 busyRetryCount++
-                                _state.value = _state.value.copy(listening = false, speechErrorMessage = null)
-                                mainHandler.postDelayed({
+                                _state.value = _state.value.copy(
+                                    listening = false,
+                                    speechErrorMessage = null,
+                                    micConflictDetected = micConflict
+                                )
+                                val retryDelay = when {
+                                    busyRetryCount <= 3 -> 550L
+                                    busyRetryCount <= 8 -> 1100L
+                                    else -> 1800L
+                                }
+                                scheduleRetry(retryDelay) {
                                     if (_state.value.liveSessionActive && !_state.value.muted && !_state.value.speaking) {
                                         startListeningInternal(activeLanguage, preferOfflineRecognition || !isNetworkConnected())
                                     }
-                                }, 460L)
+                                }
                                 return
                             }
 
-                            // Keep hands-free live session alive during silence/pauses/transient audio-focus glitches without requiring user to re-tap
+                            // Keep hands-free live session alive across silence, audio focus glitches, Screen Recorder mic conflicts, and Android 12-14 transient errors (10..15)
                             val isRecoverableLiveError = isTimeoutOrNoMatch ||
                                 error == SpeechRecognizer.ERROR_CLIENT ||
                                 error == SpeechRecognizer.ERROR_AUDIO ||
                                 error == SpeechRecognizer.ERROR_SERVER ||
                                 error == SpeechRecognizer.ERROR_NETWORK ||
-                                error == SpeechRecognizer.ERROR_NETWORK_TIMEOUT
+                                error == SpeechRecognizer.ERROR_NETWORK_TIMEOUT ||
+                                error in 10..15
                             if (_state.value.liveSessionActive &&
                                 _state.value.autoVoiceEnabled &&
                                 !_state.value.muted &&
                                 isRecoverableLiveError
                             ) {
                                 consecutiveLiveSilenceCount++
-                                _state.value = _state.value.copy(listening = false, speechErrorMessage = null)
+                                _state.value = _state.value.copy(
+                                    listening = false,
+                                    speechErrorMessage = null,
+                                    micConflictDetected = micConflict
+                                )
                                 val delayMs = when {
-                                    error == SpeechRecognizer.ERROR_AUDIO -> 520L
-                                    consecutiveLiveSilenceCount < 10 -> 320L
-                                    else -> 700L
+                                    error == SpeechRecognizer.ERROR_AUDIO -> if (micConflict) 1500L else 700L
+                                    error in 10..15 -> 1200L
+                                    consecutiveLiveSilenceCount < 10 -> 360L
+                                    else -> 750L
                                 }
-                                mainHandler.postDelayed({
+                                scheduleRetry(delayMs) {
                                     if (_state.value.liveSessionActive &&
                                         _state.value.autoVoiceEnabled &&
                                         !_state.value.muted &&
@@ -358,7 +457,7 @@ class VoiceController(
                                     ) {
                                         startListeningInternal(activeLanguage, preferOfflineRecognition || !isNetworkConnected())
                                     }
-                                }, delayMs)
+                                }
                                 return
                             }
 
@@ -371,41 +470,53 @@ class VoiceController(
                             _state.value = _state.value.copy(
                                 listening = false,
                                 liveSessionActive = false,
-                                speechErrorMessage = msg
+                                speechErrorMessage = msg,
+                                micConflictDetected = error == SpeechRecognizer.ERROR_AUDIO || error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY
                             )
+                            SathiWakeWordService.setPausedForActiveVoice(appContext, false)
                         }
 
                         override fun onResults(results: Bundle?) {
+                            if (myGen != listeningGeneration) return
                             consecutiveLiveSilenceCount = 0
                             busyRetryCount = 0
+                            consecutiveAudioBusyCount = 0
                             retriedOfflineAfterNetError = false
                             lastPartialTranscript = ""
                             val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                             val spoken = matches?.firstOrNull()?.trim().orEmpty()
                             _state.value = _state.value.copy(
                                 listening = false,
-                                partialTranscript = spoken
+                                partialTranscript = spoken,
+                                micConflictDetected = false
                             )
                             if (spoken.isNotEmpty()) {
                                 onFinalTranscript(spoken)
                             } else if (_state.value.liveSessionActive && _state.value.autoVoiceEnabled && !_state.value.muted) {
-                                mainHandler.postDelayed({
+                                scheduleRetry(360L) {
                                     if (_state.value.liveSessionActive && !_state.value.muted && !_state.value.speaking) {
                                         startListeningInternal(activeLanguage, preferOfflineRecognition || !isNetworkConnected())
                                     }
-                                }, 320L)
+                                }
+                            } else {
+                                SathiWakeWordService.setPausedForActiveVoice(appContext, false)
                             }
                         }
 
                         override fun onPartialResults(partialResults: Bundle?) {
+                            if (myGen != listeningGeneration) return
                             val partial = partialResults
                                 ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                                 ?.firstOrNull()
                                 ?.trim()
                                 .orEmpty()
                             if (partial.isNotBlank()) {
+                                consecutiveAudioBusyCount = 0
                                 lastPartialTranscript = partial
-                                _state.value = _state.value.copy(partialTranscript = partial)
+                                _state.value = _state.value.copy(
+                                    partialTranscript = partial,
+                                    micConflictDetected = false
+                                )
                             }
                         }
 
@@ -420,8 +531,8 @@ class VoiceController(
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, localeTag)
                     putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                     putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1600L)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1150L)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2200L)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
                     putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 350L)
                     if (useOffline) {
                         putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
@@ -431,15 +542,25 @@ class VoiceController(
                 _state.value = _state.value.copy(listening = true)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start listening", e)
-                _state.value = _state.value.copy(
-                    listening = false,
-                    liveSessionActive = false,
-                    speechErrorMessage = if (language == SathiLanguage.BN) {
-                        "মাইক্রোফোন চালু করতে সমস্যা হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।"
-                    } else {
-                        "Could not start microphone. Please try again."
+                if (_state.value.liveSessionActive && _state.value.autoVoiceEnabled && !_state.value.muted) {
+                    _state.value = _state.value.copy(listening = false, micConflictDetected = true)
+                    scheduleRetry(1200L) {
+                        if (_state.value.liveSessionActive && !_state.value.muted && !_state.value.speaking) {
+                            startListeningInternal(activeLanguage, preferOfflineRecognition || !isNetworkConnected())
+                        }
                     }
-                )
+                } else {
+                    _state.value = _state.value.copy(
+                        listening = false,
+                        liveSessionActive = false,
+                        speechErrorMessage = if (language == SathiLanguage.BN) {
+                            "মাইক্রোফোন চালু করতে সমস্যা হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।"
+                        } else {
+                            "Could not start microphone. Please try again."
+                        }
+                    )
+                    SathiWakeWordService.setPausedForActiveVoice(appContext, false)
+                }
             }
         }
     }
@@ -471,7 +592,7 @@ class VoiceController(
                 val frameSize = 1280 // 80ms @ 16kHz mono
                 val bufferSize = maxOf(minBuf * 2, frameSize * 4)
                 recorder = AudioRecord(
-                    MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                    MediaRecorder.AudioSource.VOICE_RECOGNITION,
                     sampleRate,
                     AudioFormat.CHANNEL_IN_MONO,
                     AudioFormat.ENCODING_PCM_16BIT,
@@ -567,6 +688,8 @@ class VoiceController(
     }
 
     fun stopListening() {
+        listeningGeneration++
+        clearPendingRetry()
         mainHandler.post {
             val wasListening = _state.value.listening
             try {
@@ -576,6 +699,9 @@ class VoiceController(
             _state.value = _state.value.copy(listening = false)
             if (wasListening) {
                 playListeningCueSound(isStart = false)
+            }
+            if (!_state.value.liveSessionActive && !_state.value.speaking) {
+                SathiWakeWordService.setPausedForActiveVoice(appContext, false)
             }
         }
     }

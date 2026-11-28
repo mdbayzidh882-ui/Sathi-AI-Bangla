@@ -122,10 +122,12 @@ class OfflineCompanionEngine(
             return ytTurn
         }
 
+        val isQuestion = SathiAiService.isInformationalQuestion(text, lower)
+
         // Open Settings or other phone apps offline
-        if (lower.startsWith("open ") || lower.startsWith("launch ") ||
-            lower.contains("খোলো") || lower.contains("খুলো") || lower.contains("চালু করো") ||
-            lower.contains("ঢোকো") || lower.contains("ঢোকাও") || lower.contains("ঢুকো")
+        if (!isQuestion && (lower.startsWith("open ") || lower.startsWith("launch ") ||
+                lower.contains("খোলো") || lower.contains("খুলো") || lower.contains("চালু করো") ||
+                lower.contains("ঢোকো") || lower.contains("ঢোকাও") || lower.contains("ঢুকো"))
         ) {
             val offlineAppTarget = text
                 .replace(Regex("(open|launch)", RegexOption.IGNORE_CASE), "")
@@ -151,35 +153,35 @@ class OfflineCompanionEngine(
         }
 
         // 7. Flashlight ON / OFF & Volume
-        if (lower.contains("flashlight on") || lower.contains("torch on") ||
-            ((lower.contains("ফ্ল্যাশ") || lower.contains("টর্চ") || lower.contains("লাইট")) &&
-                (lower.contains("চালু") || lower.contains("জ্বালাও") || lower.contains("অন")))
+        if (!isQuestion && (lower.contains("flashlight on") || lower.contains("torch on") ||
+                ((lower.contains("ফ্ল্যাশ") || lower.contains("টর্চ") || lower.contains("লাইট")) &&
+                    (lower.contains("চালু") || lower.contains("জ্বালাও") || lower.contains("অন"))))
         ) {
             val reply = if (language == SathiLanguage.BN) "জি, আমি অফলাইনেই ফ্ল্যাশলাইট চালু করছি।"
             else "Sure, turning on the flashlight offline."
             return turn(reply, SathiMood.WARM, PhoneActionType.FLASHLIGHT_ON)
         }
 
-        if (lower.contains("flashlight off") || lower.contains("torch off") ||
-            ((lower.contains("ফ্ল্যাশ") || lower.contains("টর্চ") || lower.contains("লাইট")) &&
-                (lower.contains("বন্ধ") || lower.contains("অফ")))
+        if (!isQuestion && (lower.contains("flashlight off") || lower.contains("torch off") ||
+                ((lower.contains("ফ্ল্যাশ") || lower.contains("টর্চ") || lower.contains("লাইট")) &&
+                    (lower.contains("বন্ধ") || lower.contains("অফ"))))
         ) {
             val reply = if (language == SathiLanguage.BN) "জি, ফ্ল্যাশলাইট বন্ধ করছি।"
             else "Turning off the flashlight."
             return turn(reply, SathiMood.WARM, PhoneActionType.FLASHLIGHT_OFF)
         }
 
-        if (lower.contains("volume up") || (lower.contains("ভলিউম") && (lower.contains("বাড়া") || lower.contains("বাড়া") || lower.contains("বেশি")))) {
+        if (!isQuestion && (lower.contains("volume up") || (lower.contains("ভলিউম") && (lower.contains("বাড়া") || lower.contains("বাড়া") || lower.contains("বেশি"))))) {
             val reply = if (language == SathiLanguage.BN) "জি, অফলাইনে ভলিউম বাড়িয়ে দিচ্ছি।" else "Increasing media volume offline."
             return turn(reply, SathiMood.WARM, PhoneActionType.VOLUME_UP)
         }
-        if (lower.contains("volume down") || (lower.contains("ভলিউম") && (lower.contains("কমা") || lower.contains("কম")))) {
+        if (!isQuestion && (lower.contains("volume down") || (lower.contains("ভলিউম") && (lower.contains("কমা") || lower.contains("কম"))))) {
             val reply = if (language == SathiLanguage.BN) "জি, অফলাইনে ভলিউম কমিয়ে দিচ্ছি।" else "Lowering media volume offline."
             return turn(reply, SathiMood.WARM, PhoneActionType.VOLUME_DOWN)
         }
 
         // 8. Alarm / Timer / Call
-        if (lower.contains("alarm") || lower.contains("অ্যালার্ম")) {
+        if (!isQuestion && (lower.contains("alarm") || lower.contains("অ্যালার্ম"))) {
             val timeMatch = Regex("(\\d{1,2})[:.](\\d{2})").find(lower)
             val hourOnly = Regex("(\\d{1,2})").find(lower)?.groupValues?.getOrNull(1)?.toIntOrNull()
             val param = timeMatch?.let { "${it.groupValues[1].padStart(2, '0')}:${it.groupValues[2]}" }
@@ -193,7 +195,7 @@ class OfflineCompanionEngine(
             return turn(reply, SathiMood.WARM, PhoneActionType.SET_ALARM, param, "Sathi Alarm")
         }
 
-        if (lower.contains("timer") || lower.contains("টাইমার")) {
+        if (!isQuestion && (lower.contains("timer") || lower.contains("টাইমার"))) {
             val num = Regex("(\\d+)").find(lower)?.groupValues?.get(1)?.toIntOrNull() ?: 5
             val seconds = if (lower.contains("sec") || lower.contains("সেকেন্ড")) num else num * 60
             val reply = if (language == SathiLanguage.BN) {
@@ -204,9 +206,7 @@ class OfflineCompanionEngine(
             return turn(reply, SathiMood.WARM, PhoneActionType.SET_TIMER, seconds.toString(), "Sathi Timer")
         }
 
-        val isHowToQuestion = lower.contains("কীভাবে") || lower.contains("কিভাবে") ||
-            lower.contains("কেমনে") || lower.contains("how to ")
-        if (!isHowToQuestion && (lower.startsWith("call ") || lower.contains("কল কর") || lower.contains("ফোন কর"))) {
+        if (!isQuestion && (lower.startsWith("call ") || lower.contains("কল কর") || lower.contains("ফোন কর"))) {
             val digits = Regex("(\\+?\\d[\\d\\s-]{4,})").find(text)?.value?.trim() ?: ""
             val reply = if (language == SathiLanguage.BN) {
                 "জি বস, অফলাইন কল করার আগে ডায়ালার প্রস্তুত করছি।"

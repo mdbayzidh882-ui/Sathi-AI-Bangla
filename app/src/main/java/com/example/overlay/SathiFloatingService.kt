@@ -1,5 +1,6 @@
 package com.example.overlay
 
+import android.Manifest
 import android.animation.ValueAnimator
 import android.app.Notification
 import android.app.NotificationChannel
@@ -8,7 +9,9 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import androidx.core.content.ContextCompat
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
@@ -93,11 +96,13 @@ class SathiFloatingService : Service() {
     private var autoLaunchedByAppExit: Boolean = false
     private var dockedInsideApp: Boolean = false
     private var lastSpokenBriefingId: String? = null
+    private val recentFloatingHistory = mutableListOf<Pair<Boolean, String>>()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
+        startForegroundSafely()
         if (!Settings.canDrawOverlays(this)) {
             stopSelf()
             return
@@ -146,7 +151,9 @@ class SathiFloatingService : Service() {
                         listening = vs.listening,
                         speaking = vs.speaking
                     )
-                    if (vs.listening) {
+                    if (vs.micConflictDetected) {
+                        statusTextView?.text = "🎙️ অন্য অ্যাপ মাইক্রোফোন ব্যবহার করছে — অপেক্ষা করছি..."
+                    } else if (vs.listening) {
                         statusTextView?.text = "শুনছি বস... বলুন"
                     } else if (vs.speaking) {
                         statusTextView?.text = "সাথী বলছে..."
@@ -188,7 +195,6 @@ class SathiFloatingService : Service() {
             }
         }
 
-        startForegroundSafely()
         setupFloatingBubble()
         _isRunning.value = true
     }
@@ -215,11 +221,20 @@ class SathiFloatingService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        startForegroundSafely()
+        if (!Settings.canDrawOverlays(this)) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        if (bubbleView == null) {
+            setupFloatingBubble()
+        }
+        _isRunning.value = true
         when (intent?.action) {
-            ACTION_STOP -> {
-                stopSelf()
-                return START_NOT_STICKY
-            }
             ACTION_GAME_PAUSE -> {
                 applyGamePauseState(true)
             }
@@ -239,6 +254,7 @@ class SathiFloatingService : Service() {
                 }
             }
             ACTION_DOCK_ON_APP_OPEN -> {
+                voiceController?.stopLiveSession()
                 if (autoLaunchedByAppExit) {
                     dockedInsideApp = true
                     hideMiniPanel()
@@ -257,39 +273,57 @@ class SathiFloatingService : Service() {
     }
 
     private fun startForegroundSafely() {
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Sathi Floating Companion",
-                NotificationManager.IMPORTANCE_LOW
+        try {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = NotificationChannel(
+                    CHANNEL_ID,
+                    "Sathi Floating Companion",
+                    NotificationManager.IMPORTANCE_LOW
+                )
+                nm.createNotificationChannel(channel)
+            }
+
+            val openAppIntent = PendingIntent.getActivity(
+                this,
+                0,
+                Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
             )
-            nm.createNotificationChannel(channel)
-        }
 
-        val openAppIntent = PendingIntent.getActivity(
-            this,
-            0,
-            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
+            val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("Sathi AI ভাসমান অর্‌ব চালু আছে")
+                .setContentText("বস, যেকোনো স্ক্রিনে ভাসমান বাবলে ট্যাপ করে কথা বলুন")
+                .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+                .setContentIntent(openAppIntent)
+                .setOngoing(true)
+                .build()
 
-        val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Sathi AI ভাসমান অর্‌ব চালু আছে")
-            .setContentText("বস, যেকোনো স্ক্রিনে ভাসমান বাবলে ট্যাপ করে কথা বলুন")
-            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-            .setContentIntent(openAppIntent)
-            .setOngoing(true)
-            .build()
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                val hasMic = ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.RECORD_AUDIO
+                ) == PackageManager.PERMISSION_GRANTED
+                val fgsType = if (hasMic) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                } else {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                }
+                try {
+                    startForeground(NOTIFICATION_ID, notification, fgsType)
+                } catch (_: SecurityException) {
+                    startForeground(
+                        NOTIFICATION_ID,
+                        notification,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                    )
+                }
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Unable to enter foreground safely", e)
         }
     }
 
@@ -403,8 +437,9 @@ class SathiFloatingService : Service() {
             elevation = dp(18).toFloat()
         }
 
+        val maxPanelWidth = minOf(dp(336), (resources.displayMetrics.widthPixels * 0.92f).toInt())
         val pParams = WindowManager.LayoutParams(
-            dp(336),
+            maxPanelWidth,
             WindowManager.LayoutParams.WRAP_CONTENT,
             overlayLayoutType(),
             WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
@@ -661,31 +696,40 @@ class SathiFloatingService : Service() {
         }
         statusTextView?.text = "বস, স্ক্রিন ও সব ডেটা পড়ছি..."
         serviceScope.launch {
-            val frame = SathiScreenShareService.captureLatestFrame()
-            val fullQuestion = buildString {
-                if (question.isNotBlank()) append(question)
-                if (accessibilityContext.isNotBlank()) {
-                    if (isNotEmpty()) append("\n")
-                    append(accessibilityContext)
+            try {
+                val frame = SathiScreenShareService.captureLatestFrame()
+                val fullQuestion = buildString {
+                    if (question.isNotBlank()) append(question)
+                    if (accessibilityContext.isNotBlank()) {
+                        if (isNotEmpty()) append("\n")
+                        append(accessibilityContext)
+                    }
                 }
-            }
-            val analysis = if (frame != null) {
-                aiService.analyzeImage(
-                    bitmap = frame,
-                    question = fullQuestion,
-                    language = cachedLanguage,
-                    isScreenCapture = true,
-                    apiKey = cachedApiKey,
-                    screenTextContext = accessibilityContext
-                ).getOrElse {
-                    accessibilityContext.ifBlank { "বস, স্ক্রিন বিশ্লেষণ করা যায়নি।" }
+                val analysis = if (frame != null) {
+                    aiService.analyzeImage(
+                        bitmap = frame,
+                        question = fullQuestion,
+                        language = cachedLanguage,
+                        isScreenCapture = true,
+                        apiKey = cachedApiKey,
+                        screenTextContext = accessibilityContext
+                    ).getOrElse { err ->
+                        accessibilityContext.ifBlank {
+                            err.localizedMessage ?: "বস, স্ক্রিন বিশ্লেষণ করা যায়নি।"
+                        }
+                    }
+                } else {
+                    accessibilityContext.ifBlank { "স্ক্রিন ফ্রেম এখনো তৈরি হয়নি বস।" }
                 }
-            } else {
-                accessibilityContext.ifBlank { "স্ক্রিন ফ্রেম এখনো তৈরি হয়নি বস।" }
+                appendFloatingChatLine(isUser = false, analysis)
+                statusTextView?.text = "স্ক্রিন বিশ্লেষণ সম্পন্ন"
+                voiceController?.speak(analysis, cachedLanguage, cachedVoice, SathiMood.WARM)
+            } catch (e: Exception) {
+                Log.e(TAG, "Screen inspection failed", e)
+                val errMsg = "বস, স্ক্রিন পড়া যায়নি: ${e.localizedMessage ?: "আবার চেষ্টা করুন"}"
+                appendFloatingChatLine(isUser = false, errMsg)
+                statusTextView?.text = "স্ক্রিন পড়ায় সমস্যা হয়েছে"
             }
-            appendFloatingChatLine(isUser = false, analysis)
-            statusTextView?.text = "স্ক্রিন বিশ্লেষণ সম্পন্ন"
-            voiceController?.speak(analysis, cachedLanguage, cachedVoice, SathiMood.WARM)
         }
     }
 
@@ -705,94 +749,116 @@ class SathiFloatingService : Service() {
 
         statusTextView?.text = "বস, ভাবছি..."
         serviceScope.launch {
-            val enrichedMessage = if (mmState.isMonitoring && screenContext.isNotBlank()) {
-                "$query\n\n[${mmState.appLabel} স্ক্রিন তথ্য:\n${screenContext.take(700)}]"
-            } else {
-                query
-            }
-            val result = aiService.generateCompanionReply(
-                userMessage = enrichedMessage,
-                language = cachedLanguage,
-                userName = "বস",
-                memories = emptyList(),
-                recentHistory = emptyList(),
-                webSources = emptyList(),
-                allowLongTermMemory = false,
-                apiKey = cachedApiKey,
-                customSystemPrompt = cachedSystemPrompt
-            )
-            val turn = result.getOrNull() ?: return@launch
-            val finalTurn = if (turn.actionType == PhoneActionType.WEB_SEARCH) {
-                val sources = webSearchService.searchWeb(turn.actionParam.ifBlank { query }, cachedLanguage)
-                if (sources.isNotEmpty()) {
-                    aiService.generateCompanionReply(
-                        userMessage = enrichedMessage,
-                        language = cachedLanguage,
-                        userName = "বস",
-                        memories = emptyList(),
-                        recentHistory = emptyList(),
-                        webSources = sources,
-                        allowLongTermMemory = false,
-                        apiKey = cachedApiKey,
-                        customSystemPrompt = cachedSystemPrompt
-                    ).getOrElse { turn }
+            try {
+                val enrichedMessage = if (mmState.isMonitoring && screenContext.isNotBlank()) {
+                    "$query\n\n[${mmState.appLabel} স্ক্রিন তথ্য:\n${screenContext.take(700)}]"
                 } else {
-                    turn.copy(
-                        replyText = "দুঃখিত বস, এই বিষয়ে ইন্টারনেটে সঠিক তথ্য পাওয়া যায়নি।",
-                        actionType = PhoneActionType.NONE
+                    query
+                }
+                val historySnapshot = recentFloatingHistory.toList()
+                val result = aiService.generateCompanionReply(
+                    userMessage = enrichedMessage,
+                    language = cachedLanguage,
+                    userName = "বস",
+                    memories = emptyList(),
+                    recentHistory = historySnapshot,
+                    webSources = emptyList(),
+                    allowLongTermMemory = false,
+                    apiKey = cachedApiKey,
+                    customSystemPrompt = cachedSystemPrompt
+                )
+                val turn = result.getOrElse { err ->
+                    val errText = err.localizedMessage?.takeIf { it.isNotBlank() }
+                        ?: "দুঃখিত বস, উত্তর তৈরি করা যায়নি। ইন্টারনেট বা Google API Key পরীক্ষা করুন।"
+                    appendFloatingChatLine(isUser = false, errText)
+                    statusTextView?.text = "উত্তর আনা যায়নি"
+                    voiceController?.speak(errText, cachedLanguage, cachedVoice, SathiMood.COMFORTING)
+                    return@launch
+                }
+                val finalTurn = if (turn.actionType == PhoneActionType.WEB_SEARCH) {
+                    val sources = webSearchService.searchWeb(turn.actionParam.ifBlank { query }, cachedLanguage)
+                    if (sources.isNotEmpty()) {
+                        aiService.generateCompanionReply(
+                            userMessage = enrichedMessage,
+                            language = cachedLanguage,
+                            userName = "বস",
+                            memories = emptyList(),
+                            recentHistory = historySnapshot,
+                            webSources = sources,
+                            allowLongTermMemory = false,
+                            apiKey = cachedApiKey,
+                            customSystemPrompt = cachedSystemPrompt
+                        ).getOrElse { turn }
+                    } else {
+                        turn.copy(
+                            replyText = "দুঃখিত বস, এই বিষয়ে ইন্টারনেটে সঠিক তথ্য পাওয়া যায়নি।",
+                            actionType = PhoneActionType.NONE
+                        )
+                    }
+                } else turn
+
+                var finalReply = finalTurn.replyText
+                if (finalTurn.actionType == PhoneActionType.SOCIAL_MESSAGE_CONFIRM) {
+                    val wantsSendNow = (cachedAutoExecute && finalTurn.secondaryParam.isNotBlank()) ||
+                        SathiAiService.wantsImmediateSend(query)
+                    val outcome = deviceActions.executeConfirmedSocialMessage(
+                        platform = finalTurn.actionParam,
+                        messageBody = finalTurn.secondaryParam,
+                        language = cachedLanguage,
+                        recipientName = finalTurn.recipientParam,
+                        sendAfterType = wantsSendNow
+                    )
+                    if (outcome is ActionOutcome.Executed && outcome.label.isNotBlank()) {
+                        finalReply = "জি বস, ${outcome.label}"
+                    }
+                } else if (finalTurn.actionType != PhoneActionType.NONE &&
+                    finalTurn.actionType != PhoneActionType.WEB_SEARCH &&
+                    finalTurn.actionType != PhoneActionType.CALL_CONFIRM &&
+                    finalTurn.actionType != PhoneActionType.SMS_CONFIRM
+                ) {
+                    val outcome = deviceActions.executeAction(
+                        finalTurn.actionType,
+                        finalTurn.actionParam,
+                        finalTurn.secondaryParam,
+                        cachedLanguage,
+                        finalTurn.recipientParam
+                    )
+                    if (outcome is ActionOutcome.Failed) {
+                        finalReply = outcome.message
+                    }
+                } else if (cachedAutoExecute && finalTurn.actionType == PhoneActionType.SMS_CONFIRM &&
+                    (finalTurn.actionParam.isNotBlank() || finalTurn.recipientParam.isNotBlank()) &&
+                    finalTurn.secondaryParam.isNotBlank()
+                ) {
+                    deviceActions.executeConfirmedSms(
+                        target = finalTurn.actionParam,
+                        body = finalTurn.secondaryParam,
+                        language = cachedLanguage,
+                        recipientName = finalTurn.recipientParam
                     )
                 }
-            } else turn
 
-            var finalReply = finalTurn.replyText
-            if (finalTurn.actionType == PhoneActionType.SOCIAL_MESSAGE_CONFIRM) {
-                val wantsSendNow = (cachedAutoExecute && finalTurn.secondaryParam.isNotBlank()) ||
-                    SathiAiService.wantsImmediateSend(query)
-                val outcome = deviceActions.executeConfirmedSocialMessage(
-                    platform = finalTurn.actionParam,
-                    messageBody = finalTurn.secondaryParam,
-                    language = cachedLanguage,
-                    recipientName = finalTurn.recipientParam,
-                    sendAfterType = wantsSendNow
-                )
-                if (outcome is ActionOutcome.Executed && outcome.label.isNotBlank()) {
-                    finalReply = "জি বস, ${outcome.label}"
+                recentFloatingHistory.add(true to query)
+                recentFloatingHistory.add(false to finalReply)
+                while (recentFloatingHistory.size > 10) {
+                    recentFloatingHistory.removeAt(0)
                 }
-            } else if (finalTurn.actionType != PhoneActionType.NONE &&
-                finalTurn.actionType != PhoneActionType.WEB_SEARCH &&
-                finalTurn.actionType != PhoneActionType.CALL_CONFIRM &&
-                finalTurn.actionType != PhoneActionType.SMS_CONFIRM
-            ) {
-                val outcome = deviceActions.executeAction(
-                    finalTurn.actionType,
-                    finalTurn.actionParam,
-                    finalTurn.secondaryParam,
+
+                appendFloatingChatLine(isUser = false, finalReply)
+                statusTextView?.text = "উত্তর প্রস্তুত বস"
+                voiceController?.speak(
+                    finalReply,
                     cachedLanguage,
-                    finalTurn.recipientParam
+                    cachedVoice,
+                    finalTurn.mood
                 )
-                if (outcome is ActionOutcome.Failed) {
-                    finalReply = outcome.message
-                }
-            } else if (cachedAutoExecute && finalTurn.actionType == PhoneActionType.SMS_CONFIRM &&
-                (finalTurn.actionParam.isNotBlank() || finalTurn.recipientParam.isNotBlank()) &&
-                finalTurn.secondaryParam.isNotBlank()
-            ) {
-                deviceActions.executeConfirmedSms(
-                    target = finalTurn.actionParam,
-                    body = finalTurn.secondaryParam,
-                    language = cachedLanguage,
-                    recipientName = finalTurn.recipientParam
-                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Floating query failed", e)
+                val errText = "দুঃখিত বস, উত্তর আনতে সমস্যা হয়েছে (${e.localizedMessage ?: "আবার বলুন"})।"
+                appendFloatingChatLine(isUser = false, errText)
+                statusTextView?.text = "সমস্যা হয়েছে — আবার চেষ্টা করুন"
+                voiceController?.speak(errText, cachedLanguage, cachedVoice, SathiMood.COMFORTING)
             }
-
-            appendFloatingChatLine(isUser = false, finalReply)
-            statusTextView?.text = "উত্তর প্রস্তুত বস"
-            voiceController?.speak(
-                finalReply,
-                cachedLanguage,
-                cachedVoice,
-                finalTurn.mood
-            )
         }
     }
 

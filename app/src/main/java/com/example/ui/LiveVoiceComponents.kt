@@ -114,6 +114,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.MainActivity
 import com.example.core.BitmapUtils
 import com.example.core.SathiAnimationStyle
 import com.example.core.SathiOrbStyle
@@ -511,6 +512,7 @@ fun LiveVoiceChatScreen(
         if (granted) {
             viewModel.onMicButtonTapped()
         } else {
+            MainActivity.suppressNextAutoVirtualWindow()
             micPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
@@ -792,6 +794,11 @@ fun LiveVoiceChatScreen(
                     )
 
                     val statusLabel = when {
+                        voiceState.micConflictDetected -> if (language == SathiLanguage.BN) {
+                            "Mic Conflict • স্ক্রিন রেকর্ডার মাইক ব্যবহার করছে, অপেক্ষা করছি..."
+                        } else {
+                            "Mic busy (Screen Recorder) • Retrying..."
+                        }
                         isThinking -> if (language == SathiLanguage.BN) "Thinking • ভাবছি..." else "Thinking"
                         voiceState.speaking -> if (language == SathiLanguage.BN) "Speaking • সাথী বলছে" else "Speaking"
                         voiceState.muted -> if (language == SathiLanguage.BN) "Muted • মিউট" else "Muted"
@@ -1005,6 +1012,7 @@ fun LiveVoiceChatScreen(
                                     context,
                                     Manifest.permission.CAMERA
                                 ) == PackageManager.PERMISSION_GRANTED
+                                MainActivity.suppressNextAutoVirtualWindow()
                                 if (granted) cameraLauncher.launch(useFrontCamera)
                                 else cameraPermLauncher.launch(Manifest.permission.CAMERA)
                             },
@@ -1024,6 +1032,7 @@ fun LiveVoiceChatScreen(
                                 } else {
                                     val mgr = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager
                                     if (mgr != null) {
+                                        MainActivity.suppressNextAutoVirtualWindow()
                                         screenShareLauncher.launch(mgr.createScreenCaptureIntent())
                                     }
                                 }

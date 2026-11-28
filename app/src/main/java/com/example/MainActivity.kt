@@ -147,6 +147,7 @@ class MainActivity : ComponentActivity() {
                                         "Unlock Sathi AI"
                                     )
                                     if (confirmIntent != null) {
+                                        skipAutoWindowOnce = true
                                         runCatching { unlockLauncher.launch(confirmIntent) }
                                     } else {
                                         isAppUnlocked = true
@@ -172,6 +173,7 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         skipAutoWindowOnce = false
+        suppressAutoWindowOnce = false
         if (SathiFloatingService.isRunning.value) {
             runCatching {
                 startService(
@@ -194,7 +196,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun maybeAutoOpenVirtualWindow() {
-        if (isChangingConfigurations || isFinishing || skipAutoWindowOnce) return
+        if (isChangingConfigurations || isFinishing || skipAutoWindowOnce || suppressAutoWindowOnce) return
         if (!autoVirtualWindowEnabled) return
         if (!Settings.canDrawOverlays(this)) return
         if (SathiScreenReaderService.isGameModePaused.value) return
@@ -215,6 +217,15 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         if (intent.getBooleanExtra(SathiWakeWordService.EXTRA_WAKE_TRIGGERED, false)) {
             wakeTriggerTick++
+        }
+    }
+
+    companion object {
+        @Volatile
+        private var suppressAutoWindowOnce: Boolean = false
+
+        fun suppressNextAutoVirtualWindow() {
+            suppressAutoWindowOnce = true
         }
     }
 }

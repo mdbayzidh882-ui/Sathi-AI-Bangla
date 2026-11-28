@@ -687,6 +687,7 @@ class ExampleRobolectricTest {
         assertTrue(defaultPrompt.contains("Game Mode & Multimedia"))
         assertTrue(defaultPrompt.contains("Incoming Call & Message Handling"))
         assertTrue(defaultPrompt.contains("Accuracy & Interface"))
+        assertTrue(defaultPrompt.contains("তুমি কঠোরভাবে ব্যবহারকারীর নির্দেশ অনুসরণ করবে"))
     }
 
     @Test
@@ -951,5 +952,108 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("data_backup_screen")
             .performScrollToNode(hasTestTag("redetect_ai_models_button"))
         composeTestRule.onNodeWithTag("redetect_ai_models_button").assertIsDisplayed()
+    }
+
+    @Test
+    fun `gemini contents normalization, anti-hijack guards, and mic conflict state work cleanly`() = runBlocking {
+        val ai = SathiAiService()
+        val offline = OfflineCompanionEngine()
+
+        // 1. Gemini contents must drop leading model greeting and avoid duplicating trailing user prompt
+        val contents = SathiAiService.buildGeminiContents(
+            recentHistory = listOf(
+                false to "আসসালামু আলাইকুম বস! আমি সাথী।",
+                true to "হাই",
+                false to "কেমন আছেন বস?",
+                true to "বাংলাদেশের রাজধানী কী?"
+            ),
+            userMessage = "বাংলাদেশের রাজধানী কী?"
+        )
+        assertEquals(3, contents.length())
+        assertEquals("user", contents.getJSONObject(0).getString("role"))
+        assertEquals("model", contents.getJSONObject(1).getString("role"))
+        assertEquals("user", contents.getJSONObject(2).getString("role"))
+        assertEquals(
+            "বাংলাদেশের রাজধানী কী?",
+            contents.getJSONObject(2).getJSONArray("parts").getJSONObject(0).getString("text")
+        )
+
+        // Consecutive same-role messages are merged without breaking alternation
+        val merged = SathiAiService.buildGeminiContents(
+            recentHistory = listOf(
+                false to "স্বাগতম",
+                true to "প্রথম প্রশ্ন",
+                true to "দ্বিতীয় প্রশ্ন"
+            ),
+            userMessage = "তৃতীয় প্রশ্ন"
+        )
+        assertEquals(1, merged.length())
+        assertEquals("user", merged.getJSONObject(0).getString("role"))
+        val mergedText = merged.getJSONObject(0).getJSONArray("parts").getJSONObject(0).getString("text")
+        assertTrue(mergedText.contains("প্রথম প্রশ্ন"))
+        assertTrue(mergedText.contains("তৃতীয় প্রশ্ন"))
+
+        // 2. False-positive time/date queries must NOT return current clock
+        val scheduleTurn = ai.generateCompanionReply(
+            userMessage = "পড়াশোনার সময়সূচি কীভাবে বানাব?",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertFalse(scheduleTurn.replyText.contains("মিনিট"))
+
+        val complexityTurn = ai.generateCompanionReply(
+            userMessage = "what is time complexity",
+            language = SathiLanguage.EN,
+            userName = "Bayzid",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertNotEquals(PhoneActionType.NONE, complexityTurn.actionType)
+
+        // 3. False-positive WhatsApp / Alarm / OpenApp / Name-save hijacks must be blocked
+        val weatherPrompt = ai.generateCompanionReply(
+            userMessage = "আজকের আবহাওয়া জানাও",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertNotEquals(PhoneActionType.SOCIAL_MESSAGE_CONFIRM, weatherPrompt.actionType)
+
+        val alarmQuestion = ai.generateCompanionReply(
+            userMessage = "অ্যালার্ম কে আবিষ্কার করেন?",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertNotEquals(PhoneActionType.SET_ALARM, alarmQuestion.actionType)
+
+        val offlineAlarmQ = offline.respondOffline("অ্যালার্ম কে আবিষ্কার করেন?", SathiLanguage.BN, "বাইজিদ")
+        assertNotEquals(PhoneActionType.SET_ALARM, offlineAlarmQ.actionType)
+
+        val bankQuestion = ai.generateCompanionReply(
+            userMessage = "ব্যাংক অ্যাকাউন্ট কীভাবে খোলো?",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertNotEquals(PhoneActionType.OPEN_APP, bankQuestion.actionType)
+
+        val poemWithMyName = ai.generateCompanionReply(
+            userMessage = "আমার নাম দিয়ে একটা কবিতা লেখো",
+            language = SathiLanguage.BN,
+            userName = "বাইজিদ",
+            memories = emptyList(),
+            recentHistory = emptyList()
+        ).getOrThrow()
+        assertFalse(poemWithMyName.replyText.contains("মনে রাখলাম"))
+        assertNotEquals(PhoneActionType.SOCIAL_MESSAGE_CONFIRM, poemWithMyName.actionType)
+
+        // 4. VoiceEngineState defaults micConflictDetected to false
+        assertFalse(com.example.data.VoiceEngineState().micConflictDetected)
     }
 }

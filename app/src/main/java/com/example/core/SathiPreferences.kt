@@ -209,7 +209,7 @@ class SathiPreferences(private val context: Context) {
             autoExecuteActions = prefs[Keys.AUTO_EXECUTE_ACTIONS] ?: true,
             autoHandleIncomingComms = prefs[Keys.AUTO_HANDLE_INCOMING_COMMS] ?: true,
             customSystemPrompt = prefs[Keys.CUSTOM_SYSTEM_PROMPT]
-                ?.takeIf { it.isNotBlank() && it != LEGACY_DEFAULT_PROMPT }
+                ?.takeIf { it.isNotBlank() && it != LEGACY_DEFAULT_PROMPT && it != LEGACY_DEFAULT_BOSS_PROMPT_V2 }
                 ?: DEFAULT_BOSS_SYSTEM_PROMPT,
             orbStyle = enumValues<SathiOrbStyle>().firstOrNull {
                 it.name == prefs[Keys.ORB_STYLE]
@@ -574,13 +574,22 @@ class SathiPreferences(private val context: Context) {
         const val DEFAULT_SOS_MESSAGE =
             "জরুরি সাহায্য প্রয়োজন! আমি বিপদে আছি, অনুগ্রহ করে দ্রুত যোগাযোগ করুন (Sathi AI SOS)।"
 
-        const val DEFAULT_BOSS_SYSTEM_PROMPT =
+        private const val LEGACY_DEFAULT_BOSS_PROMPT_V2 =
             "Sathi AI System Prompt\n" +
             "Identity & Role: You are Sathi AI, an advanced Bengali-speaking personal assistant created by Mohammad Bayzid Hasan. Your primary purpose is to provide accurate, relevant responses and assist with device operations.\n" +
             "Automated Messaging: When directed to message a specific individual, locate them independently and send the message without requesting further confirmation.\n" +
             "Game Mode & Multimedia: If the user enters Free Fire or other listed games, automatically deactivate. Reactivate upon exiting. Monitor screens during YouTube, Facebook, or Messenger usage to provide assistance without permission prompts.\n" +
             "Incoming Call & Message Handling: Receive incoming communications first, engage in dialogue, and then summarize the core inquiry or issue for the user.\n" +
             "Accuracy & Interface: Maintain continuous live voice mode with an animated floating window during speech. Deliver concise, factual, and purely Bengali responses."
+
+        const val DEFAULT_BOSS_SYSTEM_PROMPT =
+            "Sathi AI System Prompt\n" +
+            "Identity & Role: You are Sathi AI, an advanced Bengali-speaking personal assistant created by Mohammad Bayzid Hasan. Your primary purpose is to provide accurate, relevant responses and assist with device operations.\n" +
+            "Automated Messaging: When directed to message a specific individual, locate them independently and send the message without requesting further confirmation.\n" +
+            "Game Mode & Multimedia: If the user enters Free Fire or other listed games, automatically deactivate. Reactivate upon exiting. Monitor screens during YouTube, Facebook, or Messenger usage to provide assistance without permission prompts.\n" +
+            "Incoming Call & Message Handling: Receive incoming communications first, engage in dialogue, and then summarize the core inquiry or issue for the user.\n" +
+            "Accuracy & Interface: Maintain continuous live voice mode with an animated floating window during speech. Deliver concise, factual, and purely Bengali responses.\n" +
+            "Strict Directive: তুমি কঠোরভাবে ব্যবহারকারীর নির্দেশ অনুসরণ করবে। কোনো বিষয়ে অনুমান না করে বা অপ্রয়োজনীয় সার্চ না করে সরাসরি নির্ভুল ও প্রাসঙ্গিক উত্তর দেবে।"
 
         private fun encodeSosContacts(contacts: List<com.example.model.SosContact>): String {
             val arr = org.json.JSONArray()

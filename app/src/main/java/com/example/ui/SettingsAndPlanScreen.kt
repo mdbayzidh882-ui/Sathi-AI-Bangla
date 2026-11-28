@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import com.example.MainActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -189,6 +190,7 @@ fun SettingsAndPlanScreen(
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     list.add(Manifest.permission.POST_NOTIFICATIONS)
                 }
+                MainActivity.suppressNextAutoVirtualWindow()
                 basicPermsLauncher.launch(list.toTypedArray())
             },
             onSelectScrollLimit = { viewModel.setScrollLimit(it) },
@@ -270,6 +272,7 @@ fun SettingsAndPlanScreen(
                 Button(onClick = {
                     showAccessibilityDialog = false
                     try {
+                        MainActivity.suppressNextAutoVirtualWindow()
                         context.startActivity(
                             Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         )
@@ -310,6 +313,7 @@ fun SettingsAndPlanScreen(
                         Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                         Uri.parse("package:${context.packageName}")
                     ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                    MainActivity.suppressNextAutoVirtualWindow()
                     context.startActivity(intent)
                 }) {
                     Text(if (language == SathiLanguage.BN) "সেটিংস খুলুন" else "Open Settings")
@@ -838,6 +842,7 @@ fun SettingsAndPlanScreen(
                                     if (granted) {
                                         viewModel.onMicButtonTapped()
                                     } else {
+                                        MainActivity.suppressNextAutoVirtualWindow()
                                         settingsVoiceOrbMicLauncher.launch(Manifest.permission.RECORD_AUDIO)
                                     }
                                 },
@@ -996,6 +1001,7 @@ fun SettingsAndPlanScreen(
                                         viewModel.setWakeWordEnabled(true)
                                         SathiWakeWordService.startService(context)
                                     } else {
+                                        MainActivity.suppressNextAutoVirtualWindow()
                                         wakeMicLauncher.launch(Manifest.permission.RECORD_AUDIO)
                                     }
                                 } else {
@@ -1104,18 +1110,26 @@ fun SettingsAndPlanScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         OutlinedButton(
+                            onClick = { systemPromptInput = "" },
+                            modifier = Modifier
+                                .weight(0.9f)
+                                .testTag("settings_clear_prompt_button")
+                        ) {
+                            Text(if (language == SathiLanguage.BN) "সব মুছুন" else "Clear")
+                        }
+                        OutlinedButton(
                             onClick = {
                                 systemPromptInput = SathiPreferences.DEFAULT_BOSS_SYSTEM_PROMPT
                                 viewModel.saveCustomSystemPrompt(SathiPreferences.DEFAULT_BOSS_SYSTEM_PROMPT)
                             },
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text(if (language == SathiLanguage.BN) "ডিফল্ট রিসেট" else "Reset Default")
+                            Text(if (language == SathiLanguage.BN) "ডিফল্ট" else "Default")
                         }
                         Button(
                             onClick = { viewModel.saveCustomSystemPrompt(systemPromptInput) },
                             modifier = Modifier
-                                .weight(1.2f)
+                                .weight(1.1f)
                                 .testTag("settings_save_prompt_button")
                         ) {
                             Text(if (language == SathiLanguage.BN) "সংরক্ষণ" else "Save")
